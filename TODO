@@ -1,0 +1,15 @@
+-*- TEXT -*-
+
+
+* BUGS
+
+** bug-old: using a brute-force NTP client leads to wrong accounting
+
+** bug-bw/01-Jul-00: installation does not keep file timestamps
+
+
+* TODO
+
+
+** todo-bw/01-Jul-00: don't show all ISPs in graph. Show only active
+   ones or use a special graph flag (bad idea).
