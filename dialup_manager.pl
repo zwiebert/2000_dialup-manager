@@ -1,25 +1,25 @@
 #! /usr/local/bin/perl -w
 
-$0 =~ m!^(.*)/([^/]*)$!;
+$0 =~ m!^(.*)/([^/]*)$! or die "path of program file required (e.g. ./$0)";
 my ($progdir, $progname) = ($1, $2);
-my @isps = ("KNUUT", "KNUUT_MCI", "KNUUT_0800", "NIKOMA", "NGI", "NGI_SH", "COMUNDO", "COMUNDO_030", "DELLNET"); 
+my @isps;
+my %isp_cfg_map;
+my ($cfg_isp, $cfg_cmd, $cfg_label, $cfg_color, $cfg_tarif, $cfg_SIZE) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9,);
+sub get_isp_cfg($$) { $cfg=$isp_cfg_map{$_[0]}; $$cfg[$_[1]]; }
+sub get_isp_tarif ($) { $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_tarif]; }
+sub get_isp_cmd ($) { $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_cmd]; }
+sub get_isp_label ($) { $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_label]; }
+sub get_isp_color ($) { $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_color]; }
+
+
 my $ppp_offset=30;
 my $db_ready = 0;
 my $isp_curr= defined $ARGV[0] ? $ARGV[0] : '';
+my $cfg_file="${progdir}/dialup_manager.cfg";
+my $cost_file="${progdir}/dialup_cost.data";
 
-use strict;
-use Time::Local;
-use Graphs;
-
-sub tarif ( $$ );
-sub calc_price ( $$$ );
-sub init ();
-sub cb_disconnect ();
-sub online ();
-sub check_online ();
-sub update_sum ();
-
-#-- begin library
+# constants
+my @wday_names=('Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag');
 my $days_per_week = 7;
 my $hours_per_day = 24;
 my $mins_per_hour = 60;
@@ -28,186 +28,20 @@ my $secs_per_min = 60;
 my $secs_per_hour = $secs_per_min * $mins_per_hour;
 my $secs_per_day = $secs_per_hour * $hours_per_day;
 
-my ($offs_pfg_per_clock, $offs_secs_per_clock, $offs_sw_start_time, $offs_pfg_per_connection, $offs_rate_id) = (0,1,2,3,4,5,6,7,8,9);
+use strict;
+use Time::Local;
+use Graphs;
+use Dialup_Cost;
 
-my %month_map=(Jan => 0, Feb => 1, Mar => 2, Apr => 3, May => 4, Jun => 5,
-	       Jul => 6, Aug => 7, Sep => 8, Oct => 9, Nov => 10, Dec => 11);
-my @wday_names=('Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag');
-my $start_sel530_knuut = timelocal(0, 0, 0, 8, $month_map{'Oct'}, 99);
-my $start_knuut_mci2 = timelocal(0, 0, 0, 1, $month_map{'Nov'}, 99);
-my $start_knuut_08002 = timelocal(0, 0, 0, 1, $month_map{'Nov'}, 99);
-my $start_nikoma2 = timelocal(0, 0, 0, 1, $month_map{'Dec'}, 99);
+sub init ();
+sub cb_disconnect ();
+sub online ();
+sub check_online ();
+sub update_sum ();
+sub cfg_editor_window ($$);
 
-my $start_comundo_aktion1 = timelocal(0, 0, 18, 24, $month_map{'Dec'}, 99);
-my $end_comundo_aktion1 =  timelocal(0, 0, 0, 25, $month_map{'Dec'}, 99);
-
-my $time_max = timelocal(0, 0, 0, 1, 0, 135);
-my $time_min = 0;
-
-my %tarif_data =
-    ( NGI => 
-    [ 
-      [
-       [
-	0,			# [ Beginn-, Enddatum ] oder 0
-	0,			# | Wochentagsset (0-6) oder 0
-	0,			# [ Beginn-, Endzeit ] oder 0
-	],
-       [
-	4.89 / $secs_per_min,	# Betrag in Pfg
-	1,			# Taktdauer in Sekunden
-	0,			# Zählung ab: (1) Telefonverbindung oder (0) PPP Verbindung
-	0,			# Verbindungentgeld (Einwahlstrafe)
-	0,			# Tarif-ID (Konvention: 1=Basistarif)  2... Anwendung für Zeittakte (n < 0 überschreibt |n| )
-	],
-       ]],
-    NGI_SH => [[[0, 0, 0], [4.89 / 60, 1, 0, 0, 0],],],
-    NIKOMA => 
-    [
-     [[[$time_min, $start_nikoma2], 0, 0], [4.9 / 60, 1, 1, 0, 1],],
-     [[[$start_nikoma2, $time_max], 0, [8 * $secs_per_hour, 24 * $secs_per_hour]], [4.79 / 60, 1, 1, 0, 1],],
-     [[[$start_nikoma2, $time_max], 0, [0 * $secs_per_hour, 1 * $secs_per_hour]], [4.79 / 60, 1, 1, 0, 1],],
-     [[[$start_nikoma2, $time_max], 0, [1 * $secs_per_hour, 8 * $secs_per_hour]], [2.99 / 60, 1, 1, 0, 1],],
-     ],
-    KNUUT_0800 => 
-    [
-     [[[$time_min, $start_knuut_08002], 0, 0], [6.5 / 60, 1, 1, 0, 1],],
-     [[[$start_knuut_08002, $time_max], 0, 0], [5 / 60, 1, 1, 0, 1],],
-     ],
-    KNUUT_MCI =>
-    [
-     [[[$time_min, $start_knuut_mci2], [0, 1, 2, 3, 4, 5,], [8 * $secs_per_hour, 20 * $secs_per_hour]], [3 / 60, 1, 1, 0, 2],],
-     [[[$time_min, $start_knuut_mci2], 0, [9 * $secs_per_hour, 18 * $secs_per_hour]], [8.4 / 60, 1, 1, 0, 1],],
-     [[[$time_min, $start_knuut_mci2], 0, [18 * $secs_per_hour, 21 * $secs_per_hour]], [4.8 / 60, 1, 1, 0, 1],],
-     [[[$time_min, $start_knuut_mci2], 0, [21 * $secs_per_hour, 24 * $secs_per_hour]], [3 / 60, 1, 1, 0, 1],],
-     [[[$time_min, $start_knuut_mci2], 0, [0 * $secs_per_hour, 5 * $secs_per_hour]], [3 / 60, 1, 1, 0, 1],],
-     [[[$time_min, $start_knuut_mci2], 0, [5 * $secs_per_hour, 9 * $secs_per_hour]], [4.8 / 60, 1, 1, 0, 1],],
-
-     [[[$start_knuut_mci2, $time_max], [0, 1, 2, 3, 4, 5,], [8 * $secs_per_hour, 20 * $secs_per_hour]], [2 / 60, 1, 1, 0, 2],],
-     [[[$start_knuut_mci2, $time_max], 0, [9 * $secs_per_hour, 18 * $secs_per_hour]], [4.6 / 60, 1, 1, 0, 1],],
-     [[[$start_knuut_mci2, $time_max], 0, [18 * $secs_per_hour, 21 * $secs_per_hour]], [3.5 / 60, 1, 1, 0, 1],],
-     [[[$start_knuut_mci2, $time_max], 0, [21 * $secs_per_hour, 24 * $secs_per_hour]], [2.3 / 60, 1, 1, 0, 1],],
-     [[[$start_knuut_mci2, $time_max], 0, [0 * $secs_per_hour, 9 * $secs_per_hour]], [2.3 / 60, 1, 1, 0, 1],],
-     ], KNUUT => 
-    [
-     [[0, [0, 1, 2, 3, 4, 5,], [8 * $secs_per_hour, 20 * $secs_per_hour]], [2 / 60, 1, 1, 0, 2],],
-
-     [[[$time_min, $start_sel530_knuut], 0, [5 * $secs_per_hour, 9 * $secs_per_hour]], [12, 2.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $start_sel530_knuut], 0, [9 * $secs_per_hour, 18 * $secs_per_hour]], [12, 1.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $start_sel530_knuut], 0, [18 * $secs_per_hour, 21 * $secs_per_hour]], [12, 2.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $start_sel530_knuut], 0, [21 * $secs_per_hour, 24 * $secs_per_hour]], [12, 4 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $start_sel530_knuut], 0, [0 * $secs_per_hour, 5 * $secs_per_hour]], [12, 4 * $secs_per_min, 1, 0, 1],],
-
-     [[[$start_sel530_knuut, $time_max], 0, [5 * $secs_per_hour, 9 * $secs_per_hour]], [8.4, 2.5 * $secs_per_min, 1, 0, 1],],
-     [[[$start_sel530_knuut, $time_max], 0, [9 * $secs_per_hour, 18 * $secs_per_hour]], [8.4, 1.5 * $secs_per_min, 1, 0, 1],],
-     [[[$start_sel530_knuut, $time_max], 0, [18 * $secs_per_hour, 21 * $secs_per_hour]], [8.4, 2.5 * $secs_per_min, 1, 0, 1],],
-     [[[$start_sel530_knuut, $time_max], 0, [21 * $secs_per_hour, 24 * $secs_per_hour]], [8.4, 4 * $secs_per_min, 1, 0, 1],],
-     [[[$start_sel530_knuut, $time_max], 0, [0 * $secs_per_hour, 5 * $secs_per_hour]], [8.4, 4 * $secs_per_min, 1, 0, 1],],
-     ], DELLNET => 
-    [
-     [[[$time_min, $time_max], 0, [5 * $secs_per_hour, 9 * $secs_per_hour]], [8.4, 2.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $time_max], 0, [9 * $secs_per_hour, 18 * $secs_per_hour]], [8.4, 1.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $time_max], 0, [18 * $secs_per_hour, 21 * $secs_per_hour]], [8.4, 2.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $time_max], 0, [21 * $secs_per_hour, 24 * $secs_per_hour]], [8.4, 4 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $time_max], 0, [0 * $secs_per_hour, 5 * $secs_per_hour]], [8.4, 4 * $secs_per_min, 1, 0, 1],],
-     ], COMUNDO => 
-    [
-    [[[$time_min, $time_max], 0, [5 * $secs_per_hour, 9 * $secs_per_hour]], [12, 2.5 * $secs_per_min, 1, 0, 1],],
-    [[[$time_min, $time_max], 0, [9 * $secs_per_hour, 18 * $secs_per_hour]], [12, 1.5 * $secs_per_min, 1, 0, 1],],
-    [[[$time_min, $time_max], 0, [18 * $secs_per_hour, 21 * $secs_per_hour]], [12, 2.5 * $secs_per_min, 1, 0, 1],],
-    [[[$time_min, $time_max], 0, [21 * $secs_per_hour, 24 * $secs_per_hour]], [12, 4 * $secs_per_min, 1, 0, 1],],
-    [[[$time_min, $time_max], 0, [0 * $secs_per_hour, 5 * $secs_per_hour]], [12, 4 * $secs_per_min, 1, 0, 1],],
-     # zeitbegrenzte Aktionstarife
-    [[[$start_comundo_aktion1, $end_comundo_aktion1], 0, [0 * $secs_per_hour, 24 * $secs_per_hour]], [0, 4 * $secs_per_min, 1, 0, 1],],
-     ], COMUNDO_030 => 
-    [
-     [[[$time_min, $time_max], 0, [5 * $secs_per_hour, 9 * $secs_per_hour]], [8.4, 2.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $time_max], 0, [9 * $secs_per_hour, 18 * $secs_per_hour]], [8.4, 1.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $time_max], 0, [18 * $secs_per_hour, 21 * $secs_per_hour]], [8.4, 2.5 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $time_max], 0, [21 * $secs_per_hour, 24 * $secs_per_hour]], [8.4, 4 * $secs_per_min, 1, 0, 1],],
-     [[[$time_min, $time_max], 0, [0 * $secs_per_hour, 5 * $secs_per_hour]], [8.4, 4 * $secs_per_min, 1, 0, 1],],
-     ],
-    );
-
-my $db_start_time = time ();
-sub db_time () {
-    time ();
-#    (time () - $db_start_time) + timelocal(3, 54, 13, 1, 11, 99);
-#    (time () - $db_start_time) + timelocal(3, 45, 19, 1, 11, 99);
-#    (time () - $db_start_time) + timelocal(3, 54, 8, 1, 11, 99);
-#    (time () - $db_start_time) + timelocal(3, 54, 13, 5, 1, 99);  # Tuesday
-#   (time () - $db_start_time) + timelocal(0, 1, 18, 24, $month_map{'Dec'}, 99);
-}
-
-sub tarif ( $$ ) {
-    my ($isp, $time) = @_;
-    my @result=();
-    my @switchpoints=();
-    my @switchpoints_rel=();
-    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
-#    die unless exists ($tarif_data{$isp});
-    my $rec_ref = $tarif_data{$isp};
-    record: foreach my $i (@$rec_ref) {
-	my $iv = $$i[0];
-	if (ref ($$iv[0])) {
-	    # date interval
-#	    ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime ($time) unless defined $sec;
-	    my $daiv = $$iv[0];
-	    next record unless $$daiv[0] <= $time && $time < $$daiv[1];
-	}
-	if (ref ($$iv[1])) {
-	    # weekday interval
-	    ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime ($time) unless defined $sec;
-	    my $wdiv = $$iv[1];
-	    foreach my $wd (@$wdiv) {
-		goto found if ($wd == $wday);
-	    }
-	    next record;
-	  found:;
-	}
-	if (ref ($$iv[2])) {
-	    # daytime interval
-	    ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime ($time) unless defined $sec;
-	    my $dtiv = $$iv[2];
-	    my $dt = $sec + $min * $secs_per_min + $hour * $secs_per_hour;
-	    next unless ($$dtiv[0] <= $dt && $dt < $$dtiv[1]);
-	    $switchpoints[$#switchpoints+1] = $$dtiv[0];
-	    $switchpoints[$#switchpoints+1] = $$dtiv[1];
-	    {
-		my $tmp = $$dtiv[0] - $dt;
-		$tmp += $secs_per_day if $tmp <= 0;
-		$switchpoints_rel[$#switchpoints_rel+1] = $tmp;
-		$tmp = $$dtiv[1] - $dt;
-		$tmp += $secs_per_day if $tmp <= 0;
-		$switchpoints_rel[$#switchpoints_rel+1] = $tmp;
-	    }
-	}
-	{
-	    my $tmp = $$i[1];
-	    $result[$$tmp[$offs_rate_id]] = $$i[1];
-	}
-    }
-    my @rates=();
-    foreach my $i (@result) {
-	$rates[$#rates+1] = $i if defined $i;
-    }
-    die "missing rate for $isp" if $#result < 0;
-    \ (@rates, @switchpoints, @switchpoints_rel);
-}
-
-sub calc_price ( $$$ ) {
-    my ($isp, $start_time, $duration) = @_;
-    my @tmp = tarif ($isp, $start_time);
-    my $tar_ref = $tmp[0];
-    my $result=0;
-    die unless ref ($tar_ref);
-    foreach my $tar (@$tar_ref) {
-	$result +=  $$tar[0] * $duration / $$tar[1];
-    }
-    $result;
-}
-
-#- end library
+# misc globals
+my $curr_progressbar_clock=10;
 
 # State Transition Commands
 my @commands_on_startup = ();
@@ -227,12 +61,22 @@ my ($offs_sum, $offs_time_last) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
 
 my $time_start = 0;
 
+sub db_time () {
+    time ();
+#    (time () - $db_start_time) + timelocal(3, 54, 13, 1, 11, 99);
+#    (time () - $db_start_time) + timelocal(3, 45, 19, 1, 11, 99);
+#    (time () - $db_start_time) + timelocal(3, 54, 8, 1, 11, 99);
+#    (time () - $db_start_time) + timelocal(3, 54, 13, 5, 1, 99);  # Tuesday
+#   (time () - $db_start_time) + timelocal(0, 1, 18, 24, $month_map{'Dec'}, 99);
+}
+
 sub init () {
     print STDERR "trace: init()\n";
     $time_start = db_time ();
     foreach my $isp (@isps) {
 	$records{$isp}= [];
     }
+    $curr_progressbar_clock=1;
 }
 
 sub cb_disconnect ();
@@ -332,28 +176,31 @@ sub update_sum () {
     print STDERR "trace: update_sum()\n";
     my $time_curr = db_time ();
     foreach my $isp (@isps) {
-	my @tmp = tarif ($isp, $time_curr);
+	my @tmp = Dialup_Cost::tarif (get_isp_tarif($isp), $time_curr);
 	my $rates = $tmp[0];
 	my $swp = $tmp[2];
 	foreach my $rate (@$rates) {
 	    my $tmp =  $records{$isp};
-	    my $id = $$rate[$offs_rate_id];
+	    my $id = $$rate[$Dialup_Cost::offs_rate_id];
 	    unless (defined $$tmp[$id]) {
 		my @tmp2 = @template_rate_record;
 		$$tmp[$id] = \ @tmp2;
 	    }
-	    my $rec = $records{$isp}[$$rate[$offs_rate_id]];
+	    my $rec = $records{$isp}[$$rate[$Dialup_Cost::offs_rate_id]];
 	    $rec = $$tmp[$id];
 
 	    if ($$rec[$offs_time_last] == 0) {
-		$$rec[$offs_sum] = $$rate[$offs_pfg_per_connection];
-		$$rec[$offs_time_last] = $time_start - ($$rate[$offs_sw_start_time] * $ppp_offset);
+		$$rec[$offs_sum] = $$rate[$Dialup_Cost::offs_pfg_per_connection];
+		$$rec[$offs_time_last] = $time_start - ($$rate[$Dialup_Cost::offs_sw_start_time] * $ppp_offset);
 	    }
-	    my $units_curr = ($time_curr - $$rec[$offs_time_last]) / $$rate[$offs_secs_per_clock];
+	    my $units_curr = ($time_curr - $$rec[$offs_time_last]) / $$rate[$Dialup_Cost::offs_secs_per_clock];
 	    while ($$rec[$offs_time_last] < $time_curr) {
-		die unless $$rate[$offs_secs_per_clock] > 0;
-		$$rec[$offs_time_last] +=  $$rate[$offs_secs_per_clock];
-		$$rec[$offs_sum] +=  $$rate[$offs_pfg_per_clock];
+		die unless $$rate[$Dialup_Cost::offs_secs_per_clock] > 0;
+		if ($isp eq $isp_curr and $$rate[$Dialup_Cost::offs_secs_per_clock] > 1) {
+		    $curr_progressbar_clock = $$rate[$Dialup_Cost::offs_secs_per_clock];
+		}
+		$$rec[$offs_time_last] +=  $$rate[$Dialup_Cost::offs_secs_per_clock];
+		$$rec[$offs_sum] +=  $$rate[$Dialup_Cost::offs_pfg_per_clock];
 	    }
 	}
     }
@@ -378,6 +225,7 @@ my $disconnect_button;
 
 my %widgets;
 my $rtc_widget;
+my $pb_widget;
 my ($offs_record, $offs_isp_widget, $offs_sum_widget, $offs_min_price_widget) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
 
 
@@ -399,12 +247,18 @@ sub update_gui_online () {
     update_gui_dial_state ('Cyan');
 }
 
+sub update_progress_bar () {
+    use integer;
+    my $tem = (db_time () - ($time_start - $ppp_offset)) % $curr_progressbar_clock;
+    my $percent_done =  ($tem * 100) / $curr_progressbar_clock;
+    $pb_widget->value($percent_done);
+    no integer;
+}
 
 sub clear_gui_counter () {
     my $isp;
     foreach my $wid (%widgets) {
 	do { $isp = $wid; next; } unless ref $wid;
-	print "$isp<---->$isp_curr\n";
 	my $entry=$$wid[$offs_sum_widget];
 	$entry->delete ('1.0', 'end');
 	$entry->configure (-background => $entry->parent->cget('-background'));
@@ -454,7 +308,7 @@ sub update_gui_pfg_per_minute ( $ ) {
 	}
 	my $widget=$$wid[$offs_min_price_widget];
 	$widget->delete ('1.0', 'end');
-	$widget->insert('1.0', sprintf ("%.2f", calc_price ($isp, $curr_time, 60)));
+	$widget->insert('1.0', sprintf ("%.2f", Dialup_Cost::calc_price (get_isp_tarif($isp), $curr_time, 60)));
     }
 }
 
@@ -483,12 +337,12 @@ sub update_gui () {
 	} else {
 	    $disconnect_button->configure(-state => 'disabled');
 	}
-	update_gui_counter () if  ($state == $state_online);
+	update_gui_counter () if ($state == $state_online);
 	update_gui_pfg_per_minute ($curr_time);
 	update_gui_rtc ();
+	update_progress_bar () if ($state == $state_online);
     }
 }
-
 
 sub cb_disconnect () {
     if ($db_ready or -S '/tmp/.ppp') {
@@ -504,19 +358,10 @@ sub cb_disconnect () {
     0;
 }
 
-my %isp_cmd_map = (KNUUT => 'connect-isp-030.pl', KNUUT_MCI =>  'connect-isp.pl', KNUUT_0800 => 'connect-isp-0800.pl',
-		   NIKOMA => 'connect-isp-nikoma.pl', NGI => 'connect-isp-ngi.pl', NGI_SH => 'connect-isp-ngi-sh.pl',
-		   COMUNDO => 'connect-isp-comundo.pl', COMUNDO_030 => 'connect-isp-comundo-030.pl',
-		   DELLNET => 'connect-isp-dellnet.pl');
-my %isp_label_map = (KNUUT => 'Knuut-030', KNUUT_MCI =>  'Knuut-MCI',  KNUUT_0800 => 'Knuut-0800',
-		     NIKOMA => 'NIKOMA', NGI => 'NGI', NGI_SH => 'NGI Short',
-		     COMUNDO => 'Comundo', COMUNDO_030 => 'Comundo-030', DELLNET => 'Dell Net');
-my %isp_color_map = (KNUUT => 'Red', KNUUT_MCI =>  'Blue',  KNUUT_0800 => 'Goldenrod',
-		     NIKOMA => 'Purple', NGI => 'DarkGreen', NGI_SH => 'DarkGreen',
-		     COMUNDO => 'Salmon', COMUNDO_030 => 'Sienna', DELLNET => 'Sienna');
+
 sub cb_dialup2 ( $ ) {
     my ($isp) = @_;
-    my $cmd = "/root/bin/pc/" . $ENV{'USER'} . "/" . $isp_cmd_map{$isp} . '&';
+    my $cmd = "/root/bin/pc/" . $ENV{'USER'} . "/" . get_isp_cmd($isp) . '&';
     $isp_curr = $isp;
     state_trans_offline_to_dialing ();
     my $pid = fork();
@@ -558,8 +403,8 @@ sub make_diagram ( $$$$ ) {
 	foreach my $isp (@isps) {
 	    $canvas->createText($x, 10,
 				-width => $field_width,
-				-text => $isp_label_map{$isp},
-				-fill => $isp_color_map{$isp});
+				-text => get_isp_label($isp),
+				-fill => get_isp_color($isp));
 	    $x += $field_width;
 	}
     } 
@@ -586,9 +431,9 @@ sub make_diagram ( $$$$ ) {
 	my $y=40;
 	foreach my $isp (@isps) {
 	    $canvas->createText(40, $y,
-				-text => $isp_label_map{$isp},
+				-text => get_isp_label($isp),
 				-anchor => 'w',
-				-fill => $isp_color_map{$isp});
+				-fill => get_isp_color($isp));
 	    
 	    $y+=13;
 	}
@@ -606,7 +451,7 @@ sub make_diagram ( $$$$ ) {
 	  my $flag_do_restart=0;
 	  my @graphs=();
 	  my @args=();
-	  my @tmp = tarif ($isp, $time + $restart_x1);
+	  my @tmp =Dialup_Cost::tarif (get_isp_tarif($isp), $time + $restart_x1);
 	  my $tar = $tmp[0];
 	  my $swp = $tmp[2];
 	  my ($x, $y) = (0, 0);
@@ -614,13 +459,13 @@ sub make_diagram ( $$$$ ) {
 	  my @data=();
 	  my $next_switch=9999999999;
 	  foreach my $a (@$tar) {
-	      my $offs_time = $$a[$offs_sw_start_time] * $ppp_offset;
-	      my $offs_units; { use integer;  $offs_units =  $offs_time / $$a[$offs_secs_per_clock] + 1};
-	      my $sum += $offs_units * $$a[$offs_pfg_per_clock] + $$a[$offs_pfg_per_connection];
+	      my $offs_time = $$a[$Dialup_Cost::offs_sw_start_time] * $ppp_offset;
+	      my $offs_units; { use integer;  $offs_units =  $offs_time / $$a[$Dialup_Cost::offs_secs_per_clock] + 1};
+	      my $sum += $offs_units * $$a[$Dialup_Cost::offs_pfg_per_clock] + $$a[$Dialup_Cost::offs_pfg_per_connection];
 	      foreach my $i (@$swp) {
 		  $next_switch = $i if ($next_switch > $i);
 	      }
-	      if ($$a[$offs_secs_per_clock] <= 1) {
+	      if ($$a[$Dialup_Cost::offs_secs_per_clock] <= 1) {
 		  # handle pseudo linear graphs (like 1 second per clock)
 		  my $xmax2 =  $xmax;
 		  if ($next_switch < $xmax) {
@@ -631,24 +476,24 @@ sub make_diagram ( $$$$ ) {
 		  if (! $restart_x1) {
 		      $graphs[$#graphs+1]
 			  = [ 0, $sum,
-			      $xmax2, $sum + $xmax2 *  $$a[$offs_pfg_per_clock] / $$a[$offs_secs_per_clock] ];
+			      $xmax2, $sum + $xmax2 *  $$a[$Dialup_Cost::offs_pfg_per_clock] / $$a[$Dialup_Cost::offs_secs_per_clock] ];
 		  } else {
 		      $graphs[$#graphs+1]
 			  = [ $restart_x1, 0,
-			      $xmax2, ($xmax2 - $restart_x1) *  $$a[$offs_pfg_per_clock] / $$a[$offs_secs_per_clock] ];
+			      $xmax2, ($xmax2 - $restart_x1) *  $$a[$Dialup_Cost::offs_pfg_per_clock] / $$a[$Dialup_Cost::offs_secs_per_clock] ];
 		  }
 
 	      } else {
 		  # handle stair graphs (like 150 seconds per clock)
 		  my @g = (0, $sum);
 		  my $u=$offs_units+1;
-		  my $i= $$a[$offs_secs_per_clock] - $offs_time;
+		  my $i= $$a[$Dialup_Cost::offs_secs_per_clock] - $offs_time;
 		  if ($restart_x1) {
 		      @g = ();
 		      $i = $restart_x1 + 1;
 		      $u = 0;
 		  }
-		  for (; $i <= $xmax; $i+= $$a[$offs_secs_per_clock]) {
+		  for (; $i <= $xmax; $i+= $$a[$Dialup_Cost::offs_secs_per_clock]) {
 		      if ($i - $restart_x1 > $next_switch) {
 			  $restart_x = $next_switch;
 			  $flag_do_restart = 1;
@@ -657,7 +502,7 @@ sub make_diagram ( $$$$ ) {
 		      $g[$#g+1] = $i-1;
 		      $g[$#g+1] = $#g > 1 ? $g[$#g-1] : 0;
 		      $g[$#g+1] = $i;
-		      $g[$#g+1] = $u++ * $$a[$offs_pfg_per_clock];
+		      $g[$#g+1] = $u++ * $$a[$Dialup_Cost::offs_pfg_per_clock];
 		  }
 		  if (! $flag_do_restart) {
 		      if ($i != $xmax) {
@@ -695,7 +540,7 @@ sub make_diagram ( $$$$ ) {
 	  }
 
 	  $args[$#args+1] = '-fill';
-	  $args[$#args+1] = $isp_color_map{$isp};
+	  $args[$#args+1] = get_isp_color($isp);
 	  $canvas->createLine (@args);
 
 	  if ($flag_do_restart) {
@@ -738,7 +583,7 @@ sub make_gui_mainwindow () {
     $file_menu->command (-label => 'Trennen', -command => sub { cb_disconnect () });
     $file_menu->command (-label => 'Ende', -command => sub { cb_disconnect () ; exit });
 
-    $edit_menu->command (-label => 'Optionen');
+    $edit_menu->command (-label => 'Optionen', -command => sub { cfg_editor_window (100,200) });
 
     $view_menu->command (-label => 'Graph 5 min', -command => sub {make_gui_graphwindow(5 * $secs_per_min, 50) });
     $view_menu->command (-label => 'Graph 15 min', -command => sub {make_gui_graphwindow(15 * $secs_per_min, 100) });
@@ -771,7 +616,7 @@ sub make_gui_mainwindow () {
 	my $frame = $main_widget->Frame;
 	my $button = $frame->Button(-text => 'Verbinden', -command => sub{cb_dialup ($isp)});
 #	$button->after(1, sub{cb_dialup2 ($isp)});
-	my $label = $frame->Button(-text => (exists $isp_label_map{$isp} ? $isp_label_map{$isp} : $isp),
+	my $label = $frame->Button(-text => get_isp_label ($isp),
 				   -command => sub{ cb_dialup ($isp) } );
 	my $text = $frame->ROText(-height => 1, -width => 12, -takefocus => 0, -insertofftime => 0);
 	my $min_price = $frame->ROText(-height => 1, -width => 6, -takefocus => 0, -insertofftime => 0);
@@ -786,6 +631,23 @@ sub make_gui_mainwindow () {
 	$entries[$#entries+1] = $text;
 	$labels{$isp} = $label;
 	$widgets{$isp} = [0, $label, $text, $min_price];
+    }
+    {
+	my $pb = $main_widget->ProgressBar
+	    (
+	     -width => 200,
+	     -height => 20,
+	     -from => 100,
+	     -to => 0,
+	     -blocks => 10,
+	     -colors => [0, 'green', 50, 'yellow' , 80, 'red'],
+#	     -variable => \$percent_done,
+	     -relief => 'sunken',
+	     -pady => 5,
+	     -padx => 10,
+	     );
+	$pb->pack();
+	$pb_widget = $pb;
     }
     {
 	my $frame = $main_widget->Frame;
@@ -821,6 +683,151 @@ sub main_window_deiconify () {
     $main_widget->deiconify;
     gui_trans_deiconify ();
 }
+
+# configuration
+sub read_config ($) {
+    my ($file) =@_;
+    my $mi = '\'([^\']*)\'';
+    my $match_line = "$mi, +$mi, +$mi, +$mi, +$mi, *";
+    if (open IN, ($file)) {
+	while (<IN>) {
+	    if (/^#/) {
+		next;
+	    } elsif (/$match_line/) {
+		$isps[$#isps+1]=$1;
+		$isp_cfg_map{$1} = [$1, $2, $3, $4, $5];
+	    }
+	}
+	close IN;
+    } else {
+	die;
+    }
+}
+sub write_config ($) {
+    my ($file) =@_;
+    if (open OUT, (">$file")) {
+	my $fi = '\'%s\'';
+	my $fmt_line = "$fi, $fi, $fi, $fi, $fi, \n";
+	foreach my $isp (@isps) {
+	    printf OUT $fmt_line,
+	    $isp,
+	    get_isp_tarif($isp),
+	    get_isp_label($isp),
+	    get_isp_color($isp),
+	    get_isp_cmd($isp);
+	}
+	close OUT;
+    } else {
+	die;
+    }
+}
+
+# config editor gui
+sub mask_field ($$$) {
+    my ($top, $key, $val) = @_;
+    my $frame = $top->Frame;
+    $frame->pack(-expand => 1, -fill => 'x');
+    $frame->Label(-text => "$key")->pack(-side => 'left');
+    my $entry = $frame->Entry(); $entry->pack(-side => 'right', -expand => 1, -fill => 'x');
+    $entry->insert(0, $val);
+    $entry;
+}
+
+sub mask_window ($$$$$$) {
+    my ($parent, $lb, $index, $isp, $pattern, $entries) = @_;
+    my $top=$parent->Frame;
+    my @labels = ('Name', 'Command', 'Tarif', 'Farbe', 'Label');
+#    my @entries;
+    my $isp_cfg = $isp_cfg_map{$isp};
+    for (my $i=0; $i < $#labels+1; $i++) {
+	$$entries[$i] = mask_field ($top, $labels[$i], $$isp_cfg[$i]);
+    }
+    my $frame1 = $top->Frame;
+    $frame1->pack(-fill => 'x');
+    $frame1->Button(-text => 'Cancel', -command => sub{edit_bt_cancel($top)})->pack(-side => 'left');
+    $frame1->Button(-text => 'Ok', -command => sub{edit_bt_ok($top, $lb, $index, $entries)})->pack(-side => 'right');
+    $top;
+}
+
+sub item_edit_bt($$) {
+    my ($lb, $index) = @_;
+    my @entries;
+    mask_window ($main_widget->Toplevel, $lb, $index, $lb->get($index), "", \@entries)->pack();
+};
+my @cfg_isp_cfg_map;
+sub cfg_update_entries ($$) {
+    my ($idx, $entries) = @_;
+    my $cfg = $cfg_isp_cfg_map[$idx];
+    for (my $i=0; $i < $cfg_SIZE; $i++) {
+#	$$cfg[$i]=$$entries[$i]->get();
+	$$entries[$i]->delete(0, 'end');
+	$$entries[$i]->insert(0, $$cfg[$i]);
+    }
+}
+
+sub cfg_editor_window ($$) {
+    my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
+    my ($width, $height) = (500, 350);
+    my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
+    my ($xoffs, $yoffs) = (20, -20);
+    my $win=$main_widget->Toplevel;
+    $win->title('Dialup Manager: Configuration');
+
+    my $frame1 = $win->Frame;
+    my $box = $frame1->Listbox(-relief => 'sunken',
+			       -width => -1, # Shrink to fit
+			       -height => 10,	
+			       -selectmode => 'browse',
+			       -setgrid => 1);
+
+    my $scroll = $frame1->Scrollbar(-command => ['yview', $box]);
+    my $item_entry = $win->Entry();
+
+    my $frame3 = $win->Frame;
+    my $item_del_bt = $frame3->Button(-text => 'Delete', -command => sub{item_del_bt($box)});
+    my $edit_bt = $frame3->Button(-text => 'Change', -command => sub{item_edit_bt($box, $box->index('active'))});
+    my $item_add_bt = $frame3->Button(-text => 'Add', -command => sub{item_add_bt($box)});
+#my $view_bt = $frame3->Button(-text => 'View', -command => sub{view_bt($box)});
+
+    my $frame2 = $win->Frame;
+    my $exit_bt = $frame2->Button(-text => 'Cancel', -command => 'exit');
+    my $save_bt = $frame2->Button(-text => 'Ok', -command => sub{save_bt($box, $cfg_file)});
+
+    foreach (@isps) {
+	$box->insert('end', $_);
+	my @cfg;
+	$cfg_isp_cfg_map[$#cfg_isp_cfg_map+1] = \@cfg;
+	for (my $i=0; $i < $cfg_SIZE; $i++) {
+	    $cfg[$#cfg+1] =  get_isp_cfg ($_, $i);
+	}
+    }
+
+    $box->configure(-yscrollcommand => ['set', $scroll]);
+
+    $frame1->pack(-fill => 'both', -expand => 1);
+    $box->pack(-side => 'left', -fill => 'both', -expand => 1);
+    $scroll->pack(-side => 'right', -fill => 'y');
+#$item_entry->pack(-fill => 'x');
+
+    my @entries;
+    mask_window ($win, $box, 0, $box->get(0), "", \@entries)->pack();
+
+    $frame3->pack(-fill => 'x');
+#$view_bt->pack(-side => 'bottom');
+    $item_add_bt->pack(-side => 'right');
+    $item_del_bt->pack(-side => 'left');
+    $edit_bt->pack();
+
+    $frame2->pack(-fill => 'x');
+    $save_bt->pack(-side => 'right');
+    $exit_bt->pack(-side => 'left');
+
+    $box->Tk::bind ('<ButtonRelease>', sub { cfg_update_entries ($box->index('active'), \@entries) });
+}
+
+read_config($cfg_file);
+#write_config("/tmp/dialup_manager.cfg");
+Dialup_Cost::read_data($cost_file);
 
 make_gui_mainwindow();
 MainLoop;
