@@ -1,5 +1,5 @@
 package Dialup_Cost;
-## $Id$
+## $Id: Dialup_Cost.pm,v 1.2 2000/08/30 22:51:30 bertw Exp bertw $
 
 use strict;
 use Time::Local;
@@ -7,7 +7,7 @@ use Time::Local;
 BEGIN {
     use Exporter   ();
     use vars       qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-    $VERSION = do { my @r = (q$Revision: 1.1 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    $VERSION = do { my @r = (q$Revision: 1.2 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
     @ISA         = qw(Exporter);
     @EXPORT      = qw();
     %EXPORT_TAGS = ( );
@@ -217,7 +217,7 @@ sub tarif ( $$ ) {
     foreach my $i (@result) {
 	$rates[$#rates+1] = $i if defined $i;
     }
-    die "missing rate for $isp" if $#result < 0;
+    die "missing rate for peer \"$isp\"" if $#result < 0;
     \ (@rates, @switchpoints, @switchpoints_rel);
 }
 
@@ -235,6 +235,13 @@ sub calc_price ( $$$ ) {
 
 sub get_rate( $ ) {
     $$tarif_data{$_[0]}; # XXX
+}
+sub get_rate_names() {
+    my @result;
+    while (my ($name, $rate) = each (%$tarif_data)) {
+	$result[$#result+1]=$name;
+    }
+    \@result;
 }
 
 1;
