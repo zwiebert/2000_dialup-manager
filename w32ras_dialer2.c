@@ -1,11 +1,14 @@
 #include <windows.h>
 #include <ras.h>
+#include <winsock.h>
+
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 
 #define USE_SOCKETS
+#define MULTIUSER
 
 enum { CMD_quit, CMD_dialup, CMD_hangup, CMD_status, CMD_nmb };
 char cmd_chars[CMD_nmb];
@@ -116,32 +119,7 @@ get_peer (const char *name)
 
   return 0; /* peer not exist */
 }
-#ifndef USE_SOCKETS
-void
-dispatch ()
-{
-  int c, i;
-  while ((c = getchar ()) != EOF) {
 
-    switch (c) {
-    case 'C':
-      if ((c = getchar ()) != EOF) {
-	for (i=0; i < CMD_nmb; ++i) {
-	  if (cmd_chars[i] == c && cmd_hooks[i]) {
-	    char buf[80];
-	    if (fgets(buf, sizeof buf, stdin))
-	      buf[strlen(buf)-1]= '\0';
-	    (cmd_hooks[i]) (buf); }}}
-      break;
-    case 'D':
-      fprintf (stderr, "debug prev_state: %d curr_state: %d rc_state: %d\n",
-	      prev_state, curr_state, rc_state);
-      break;
-    }
-  }
-}
-#else /* USE_SOCKETS */
-#include <winsock.h>
 
 struct options {
   char *addr;
@@ -152,11 +130,11 @@ struct options {
 } opts;
 
 SOCKET sock;
-struct sockaddr_in sock_name;
 
 #define MTYPE_invalid 0
 #define MTYPE_test 1
-#define MTYPE_nmb 2
+#define MTYPE_dm 2
+#define MTYPE_nmb 3
 
 struct msg {
   unsigned short type, size;
@@ -166,61 +144,32 @@ struct test_msg {
   char txt[80];
 };
 
-int send_msg (struct msg *msg) {
-  return sendto (sock, (char *) msg, msg->size, 0, &sock_name, sizeof sock_name);
-}
-
-int recv_msg (struct msg *msg) {
-  unsigned short size = msg->size;
-  int err = recv (sock, (char *) msg, size, 0);
-  if (err != SOCKET_ERROR) {
-    msg->size = ntohs (msg->size);
-    msg->type = ntohs (msg->type);
-    if (msg->size != size)
-      msg->type = MTYPE_invalid;
-  }
-  return err;
-}
-
-void send_test_msg ()
-{
-  struct test_msg msg;
-  int count;
-  msg.h.type = MTYPE_test;
-  msg.h.size = sizeof msg;
-  strcpy (msg.txt, "A message for you");
-  if ((count = send_msg (&msg.h)) != SOCKET_ERROR) {
-    printf ("%d bytes written\n", count);
-  }
-}
-
-void recv_test_msg ()
-{
-  struct test_msg msg;
-  msg.h.size = sizeof msg;
-  printf ("wait to receive %d bytes\n", sizeof msg);
-  if (recv_msg (&msg.h) != SOCKET_ERROR) {
-    if (msg.h.type == MTYPE_test)
-      puts (msg.txt);
-  }
-}
+struct dm_msg {
+  struct msg h;
+  unsigned long sender_addr;
+  unsigned short sender_port;
+  unsigned short id;
+  char txt[80];
+#define dm_msg__hsize(mp) (ntohs((mp)->h.size))
+#define dm_msg__htype(mp) (ntohs((mp)->h.type))
+#define dm_msg__hsender_addr(mp) (ntohl((mp)->sender_addr))
+#define dm_msg__hsender_port(mp) (ntohs((mp)->sender_port))
+#define dm_msg__nsize(mp) (0+((mp)->h.size))
+#define dm_msg__ntype(mp) (0+((mp)->h.type))
+#define dm_msg__nsender_addr(mp) (0+((mp)->sender_addr))
+#define dm_msg__nsender_port(mp) (0+((mp)->sender_port))
+#define dm_msg__init(mp)  (((mp)->h.size = htons(sizeof (struct dm_msg))),\
+			   ((mp)->h.type = MTYPE_dm))
+};
 
 
+/*** Sockets ***/
 int
-make_send_socket ()
+make_recv_socket (struct sockaddr_in *sn)
 {
-  int error;
-  if ((sock = socket (sock_name.sin_family, SOCK_DGRAM, 0)) == INVALID_SOCKET)
+  if ((sock = socket (sn->sin_family, SOCK_DGRAM, 0)) == INVALID_SOCKET)
     return -1;
-  return 0;
-}
-
-int
-make_recv_socket ()
-{
-  if ((sock = socket (sock_name.sin_family, SOCK_DGRAM, 0)) == INVALID_SOCKET)
-    return -1;
-  return bind (sock, &sock_name, sizeof sock_name);
+  return bind (sock, sn, sizeof *sn);
 }
 
 int
@@ -238,16 +187,102 @@ init_sockets ()
     return err;
   }
 
-  sock_name.sin_family = AF_INET;
   return 0;
 }
 
+/*** Messages ***/
+int
+recv_msg (struct msg *msg)
+{
+  unsigned short old_size = msg->size;
+
+  int err = recv (sock, (char *) msg, ntohs (msg->size), 0);
+  if (err != SOCKET_ERROR)
+    if (old_size != msg->size)
+      msg->type = htons (MTYPE_invalid);
+
+  return err;
+}
+
+int
+send_msg_to (struct msg *msg, struct sockaddr_in *sn) {
+  return sendto (sock,
+		 (char *) msg, ntohs(msg->size),
+		 IPPROTO_UDP, /* should we better use 0 for default protocol? */
+		 sn, sizeof *sn);
+}
+
+/* Return dm_msg MSG to sender */
+int
+reply_dm_msg (struct dm_msg *msg)
+{
+  struct sockaddr_in sn;
+  sn.sin_family = PF_INET;
+  sn.sin_port = dm_msg__nsender_port (msg);
+  sn.sin_addr.s_addr = dm_msg__nsender_addr (msg);
+
+  return send_msg_to (&msg->h, &sn);
+}
+
+
+/*** Mesage Processing ***/
+void
+dispatch ()
+{
+  int c, i, err;
+  struct sockaddr_in sock_name;
+  sock_name.sin_family = PF_INET;
+  sock_name.sin_port = (opts.mask & OPT_port) ? htons (opts.port) : htons (8888);
+  sock_name.sin_addr.s_addr = ((opts.mask & OPT_addr) ?  inet_addr(opts.addr)
+			       : INADDR_ANY);
+
+  if ((err=init_sockets ()))
+    {
+      printf ("error in init-socket: %d\n", WSAGetLastError());
+      return;
+    } else if ((err=make_recv_socket (&sock_name))) {
+      printf ("cannot bind socket: %d\n", WSAGetLastError());
+      return;
+    } else {
+      /* Message Loop */
+      struct dm_msg msg;
+      dm_msg__init (&msg);
+
+      for (;;) {
+	int err = recv_msg (&msg.h);
+	puts("got message");
+	if (err == SOCKET_ERROR) {
+	  printf ("Last Error: %d\n", WSAGetLastError());
+	  break; // XXX
+	}
+	else if (dm_msg__htype (&msg) != MTYPE_dm)
+	  {
+	    printf("wrong type of message <%d>\n", msg.h.type);
+	    continue; // XXX
+	  }
+
+	switch (msg.txt[0]) {
+	case 'C':
+	  if ((c = msg.txt[1])) {
+	    for (i=0; i < CMD_nmb; ++i) {
+	      if (cmd_chars[i] == c && cmd_hooks[i]) {
+		(cmd_hooks[i]) (&msg.txt[2]); }}}
+	  break;
+	case 'D':
+	  fprintf (stderr, "debug prev_state: %d curr_state: %d rc_state: %d\n",
+		   prev_state, curr_state, rc_state);
+	  break;
+	}
+      }
+    }
+}
 
 void Usage(char *programName)
 {
-  fprintf(stderr,"%s usage:\n",programName);
-  /* Modify here to add your usage message when the program is
-   * called without arguments */
+  char buf[300];
+  sprintf(buf, "echo %s usage: [-p <IP-Port-Number>] [ -a <IP-Address-Mask> ] \n"
+	  ,programName);
+  system (buf);
 }	
 
 /* returns the index of the first argument that is not an option; i.e.
@@ -262,10 +297,11 @@ int HandleOptions(int argc,char *argv[])
       switch (argv[i][1]) {
 				/* An argument -? means help is requested */
       case '?':
-	Usage(argv[0]);
-	break;
       case 'h':
-      case 'H':
+	Usage(argv[0]);
+	exit(0);
+	break;
+       case 'H':
 	if (!stricmp(argv[i]+1,"help")) {
 	  Usage(argv[0]);
 	  break;
@@ -307,84 +343,9 @@ int HandleOptions(int argc,char *argv[])
   return firstnonoption;
 }
 
-#if 0
-
-int
-main (int ac, char **av)
-{
-  int error;
-
-  HandleOptions (ac, av);
-  if (!(error = init())) {
-
-    sock_name.sin_port = (opts.mask & OPT_port) ? htons (opts.port) : htons (8888);
-
-    if (av[1]) {
-      if (!(error = make_send_socket()))
-	sock_name.sin_addr.s_addr = ((opts.mask & OPT_addr) ?  inet_addr(opts.addr)
-				     : inet_addr("127.0.0.1"));
-      send_test_msg ();
-    } else {
-      sock_name.sin_addr.s_addr = ((opts.mask & OPT_addr) ?  inet_addr(opts.addr)
-				   : INADDR_ANY);
-      if (!(error = make_recv_socket()))
-	while (1)
-	  recv_test_msg ();
-    }
-    error = WSAGetLastError ();
-  }
-  printf ("Last Error: %d\n", error);
-  exit(error);
-  return 0;
-}
-#endif
-void
-dispatch ()
-{
-  int c, i, err;
-
-  sock_name.sin_port = (opts.mask & OPT_port) ? htons (opts.port) : htons (8888);
-  sock_name.sin_addr.s_addr = ((opts.mask & OPT_addr) ?  inet_addr(opts.addr)
-			       : INADDR_ANY);
-
-  if ((err=init_sockets ()))
-    {
-      printf ("error in init-socket: %d\n", WSAGetLastError());
-      return;
-    } else if ((err=make_recv_socket ())) {
-      printf ("cannot bind socket: %d\n", WSAGetLastError());
-      return;
-    } else {
-      struct test_msg msg;
-      msg.h.size = sizeof (msg);
-      for (;;) {
-	int err = recv_msg (&msg.h);
-	puts("got message");
-	if (err == SOCKET_ERROR) {
-	  printf ("Last Error: %d\n", WSAGetLastError());
-	  break; // XXX
-	}
-	else if (msg.h.type != MTYPE_test)
-	  continue; // XXX
-
-	switch (msg.txt[0]) {
-	case 'C':
-	  if ((c = msg.txt[1])) {
-	    for (i=0; i < CMD_nmb; ++i) {
-	      if (cmd_chars[i] == c && cmd_hooks[i]) {
-		(cmd_hooks[i]) (&msg.txt[2]); }}}
-	  break;
-	case 'D':
-	  fprintf (stderr, "debug prev_state: %d curr_state: %d rc_state: %d\n",
-		   prev_state, curr_state, rc_state);
-	  break;
-	}
-      }
-    }
-}
-
-#endif
 
+
+/*** Commands ***/
 int
 cmd_ignore (void *p)
 {
@@ -399,9 +360,14 @@ cmd_dialup (void *p)
   char buf[512];
   char *error_string="no error";
   const struct peer *peer;
-
+#ifdef MULTIUSER /* a hangup() should only done if the connection is
+                    owned by the same user -bw/14-Sep-00 */
   hangup();
-
+#else
+  if (curr_state != STATE_offline ||
+      curr_state != STATE_startup) /* we could leave such checks to windows */
+    return;
+#endif
   fprintf (stderr, "cmd_dialup(%s)\n", (const char *)p);
   //  set_state (STATE_dialing); // XXX
   if (!(peer = get_peer (p))) {
@@ -444,6 +410,7 @@ cmd_quit (void *p)
   return 0;
 }
 
+/*** Temporary Code using files to signal states ***/
 FILE *state_files[STATE_nmb];
 char *state_file_names[STATE_nmb];
 
@@ -504,8 +471,6 @@ cmd_status (void *p)
       reported_prev_state == prev_state)
     return 0;
 
-
- 
   if (reported_prev_state != prev_state)
     clear_file_state (reported_prev_state);
   if (reported_curr_state != curr_state)
@@ -590,9 +555,7 @@ cleanup ()
 int
 main (int ac, char **av)
 {
-#ifdef USE_SOCKETS
   HandleOptions (ac, av);
-#endif
   init ();
   atexit(cleanup);
   dispatch();
