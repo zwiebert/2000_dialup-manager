@@ -3,5 +3,5 @@ Version....@APP_VERSION@ (@APP_RELDATE@)
 Purpose....dialing up a PPP connection
 Warranty...NO WARRANTY
 Author.....@APP_AUTHOR@
-Copyright..(C) 1999, 2000
+Copyright..(C) 1999, 2000 @APP_AUTHOR@
 License....Free Software (BSD License)

@@ -7,7 +7,7 @@ all:  dist.deb
 
 force:
 
-distclean: force
+distrm: force
 	rm -rf ./dist
 
 dist/DEBIAN/postinst dist/DEBIAN/control: force
@@ -22,7 +22,7 @@ tkdialup: tkdialup.in force
 	sed -e "s+@APP_HOME@+$(apphome)+g" tkdialup.in >tkdialup && chmod 755 tkdialup
 
 
-dist.deb: distclean dist/DEBIAN/postinst tkdialup force
+dist.deb: distrm dist/DEBIAN/postinst tkdialup force
 	$(MAKE) root=dist/ install
 	$(MAKE) tkdialup && install tkdialup dist$(bindir)
 	dpkg-deb --build dist

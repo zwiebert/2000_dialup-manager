@@ -7,7 +7,7 @@ BEGIN {
     # set the version for version checking
     $VERSION     = 1.00;
     # if using RCS/CVS, this may be preferred
-    $VERSION = do { my @r = (q$Revision: 1.1 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r }; # must be all one line, for MakeMaker
+    $VERSION = do { my @r = (q$Revision: 1.2 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r }; # must be all one line, for MakeMaker
 
     @ISA         = qw(Exporter);
     @EXPORT      = qw(&add_graphs &steigung &extend_graphs);
@@ -122,7 +122,7 @@ sub extend_graphs ($$) {
 sub add_graphs( $$ ) {
     my ($rg1, $rg2) = @_;
     die unless ($$rg1[0] == $$rg2[0]);
-    die unless ($$rg1[$#$rg1-1] == $$rg2[$#$rg2-1]);
+#    die unless ($$rg1[$#$rg1-1] == $$rg2[$#$rg2-1]);
 
     my ($rg1e, $rg2e) = extend_graphs ($rg1, $rg2);
     my @result=();
