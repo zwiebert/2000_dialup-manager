@@ -5,7 +5,6 @@ use Time::Local;
 use Fcntl;
 use Fcntl qw(:flock);
 use IO::Handle;
-use POSIX;
 
 $0 =~ m!^(.*)/([^/]*)$! or die "path of program file required (e.g. ./$0)";
 my ($progdir, $progname) = ($1, $2);
@@ -38,7 +37,7 @@ sub get_isp_cfg ($$) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$_[1]]; }         # on
 sub set_isp_cfg ($) { my ($a)=@_; $isp_cfg_map{$$a[0]} = $a; }              # store/replace CFG by reference
 # data for config editors
 my @cfg_labels = ('Name', 'Up Cmd', 'Down Cmd', 'Label', 'Farbe', 'Tarif', 'Visible');
-my @cfg_types =  ('text', 'text',   'text',      'text', 'text',  'text',  'flag');
+my @cfg_types =  ('text', 'text',   'text',      'text', 'color', 'text',  'flag');
 
 my $ppp_offset=30;
 my $unit_end_inaccuracy=5; # hangup this seconds before we think a unit ends
@@ -65,35 +64,90 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
 #### Locale ####
 # Locale Defaults (English)
 my @wday_names=('Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday');
-my $LSmenu_file="File";
-my $LSmenu_view="View";
-my $LSmenu_edit="Edit";
-my $LSmenu_file_hangup_now="Hangup now";
-my $LSmenu_file_hangup_defer="Hangup later";
-my $LSmenu_file_quit="Quit";
-my $LSmenu_edit_options="Options";
-my $LSmenu_view_graph="Graph";
-my $LSmenu_view_clock_off="Disable Clock";
-my $LSmenu_view_about="About ...";
-my $LSmenu_view_stat="Statistic ...";
-my $LSbutton_main_hangup="Hangup";
+my %LOC;
+#---- File Menu
+$LOC{'menu_file'}="File";
+$LOC{'menu_file_hangup_now'}="Hangup now";
+$LOC{'menu_file_hangup_now.help'}='Disconnect immediatly by issuing "Down Cmd"';
+$LOC{'menu_file_hangup_defer'}="Hangup later";
+$LOC{'menu_file_hangup_defer.help'}='Disconnect just before the current unit would end';
+$LOC{'menu_file_save'}="Save Configuration";
+$LOC{'menu_file_save.help'}='Keep all configuration changes permanently';
+$LOC{'menu_file_quit'}="Quit";
+$LOC{'menu_file_quit.help'}='Disconnect and terminate this "tkdialup" process immediatly.';
+#---- Edit Menu
+$LOC{'menu_edit'}="Edit";
+$LOC{'menu_edit_options'}="Options";
+$LOC{'menu_edit_options.help'}='Change Programm settings';
+$LOC{'menu_edit_peer_options'}="Peer Options";
+$LOC{'menu_edit_peer_options.help'}='Run a configuration editor. Its not full implemented yet
+You can edit, apply and save  existing peer configurations like:
+dialup command, hangup command, label, color, rate-name, visibility
+
+You can show a rate but you cannot edit rates date.';
+$LOC{'menu_edit_graph_options'}="Graph Options";
+$LOC{'menu_edit_graph_options.help'}='Edit  background and ruler colors of graph window';
+#---- View Menu
+$LOC{'menu_view'}="View";
+$LOC{'menu_view_graph'}="Graph";
+$LOC{'menu_view_graph.help'}='Show time/money graphs of all active peers';
+$LOC{'menu_view_clock'}="Show clock";
+$LOC{'menu_view_progress_bar'}="Show progress bar";
+$LOC{'menu_view_stat'}="Statistic ...";
+$LOC{'menu_view_stat.help'}='Show a time/money history list for this user';
+$LOC{'button_main_hangup'}="Hangup";
+#---- Help Menu
+$LOC{'menu_help'}="Help";
+$LOC{'menu_help_about'}="About ...";
+$LOC{'menu_help_about.help'}='Show information about this program and its author';
+$LOC{'menu_help_balloon_help'}="Mouse Pointer Help";
+$LOC{'menu_help_balloon_help.help'}='Toggle showing balloon help';
+#---- Rate Window
+$LOC{'win_rate_date_start'}='Start Date';
+$LOC{'win_rate_date_start.help'}='Date when this rate became vaild (may be empty if next field is empty too)';
+$LOC{'win_rate_date_end'}='End Date';
+$LOC{'win_rate_date_end.help'}='Date when this rate became or will become invalid';
+$LOC{'win_rate_weekdays'}='Weekdays';
+$LOC{'win_rate_weekdays.help'}='Set of numbers (0..6) representing weekdays (Sun..Sat)';
+$LOC{'win_rate_daytime_start'}='Start Time';
+$LOC{'win_rate_daytime_start.help'}='Daytime on which this rate becomes valid (may be empty if next field is empty too)';
+$LOC{'win_rate_daytime_end'}='End Time';
+$LOC{'win_rate_daytime_end.help'}='Daytime on which tis rate becomes invalid (must end before midnight!)';
+$LOC{'win_rate_money_per_min'}='M/min';
+$LOC{'win_rate_money_per_min.help'}='Payment in money per minute (not per unit!)'; 
+$LOC{'win_rate_secs_per_unit'}='secs/unit';
+$LOC{'win_rate_secs_per_unit.help'}='Length of a unit in seconds';
+$LOC{'win_rate_money_per_connect'}='M/Conn.';
+$LOC{'win_rate_money_per_connect.help'}='Payment per connection (usually 0)';
+$LOC{'win_rate_free_linkup'}='FL';
+$LOC{'win_rate_free_linkup.help'}='Free DialUp (Paying starts not before PPP connection is up)';
+$LOC{'win_rate_overlay_rate'}='OR';
+$LOC{'win_rate_overlay_rate.help'}='Overlay Rate (this may be a additional payment with a different unit length)';
+#--- Main Window
+$LOC{'win_main_start'}="Start";
+$LOC{'win_main_start.help'}="Hit a Button to Connect a Peer";
+$LOC{'win_main_money'}="Money";
+$LOC{'win_main_money.help'}="Real Time Money Counter";
+$LOC{'win_main_rate'}="Rate";
+$LOC{'win_main_rate.help'}="Money per Minute";
+#---
+
 # read in locale file (see ./locale-de for a german locale file)
 if (open (LOC, "$progdir/locale-$applang")) {
+    my $line=0;
     while (<LOC>) {
-	if (/^wday_names\s*=\s*(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+$/) 
-	{ @wday_names=($1, $2, $3, $4, $5, $6, $7); }
-	elsif (/^menu_file\s*=\s*(.+)\s*$/) { $LSmenu_file=$1; }
-	elsif (/^menu_view\s*=\s*(.+)\s*$/) { $LSmenu_view=$1; }
-	elsif (/^menu_edit\s*=\s*(.+)\s*$/) { $LSmenu_edit=$1; }
-	elsif (/^menu_file_hangup_now\s*=\s*(.+)\s*$/) { $LSmenu_file_hangup_now=$1; }
-	elsif (/^menu_file_hangup_defer\s*=\s*(.+)\s*$/) { $LSmenu_file_hangup_defer=$1; }
-	elsif (/^menu_file_quit\s*=\s*(.+)\s*$/) { $LSmenu_file_quit=$1; }
-	elsif (/^menu_edit_options\s*=\s*(.+)\s*$/) { $LSmenu_edit_options=$1; }
-	elsif (/^menu_view_graph\s*=\s*(.+)\s*$/) { $LSmenu_view_graph=$1; }
-	elsif (/^menu_view_clock_off\s*=\s*(.+)\s*$/) { $LSmenu_view_clock_off=$1; }
-	elsif (/^menu_view_about\s*=\s*(.+)\s*$/) { $LSmenu_view_about=$1; }
-	elsif (/^menu_view_stat\s*=\s*(.+)\s*$/) { $LSmenu_view_stat=$1; }
-	elsif (/^button_main_hangup\s*=\s*(.+)\s*$/) { $LSbutton_main_hangup=$1; }
+	++$line;
+	if (/^wday_names\s*=\s*(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+$/) {
+	    @wday_names=($1, $2, $3, $4, $5, $6, $7); 
+	} elsif (/^([a-z_.]+)\s*=\s*(.+)\s*$/) {
+	    my $key=$1;
+	    my $val=$2;
+	    if (defined $LOC{$key}) {
+		$LOC{$key}=unescape_string($val);
+	    } else {
+		print STDERR "$progdir/locale-$applang:$line: Unknown configuration key <$1>\n";
+	    }
+	}
     }
     close LOC;
 }
@@ -197,44 +251,27 @@ sub tick () {
 ## commands on transitions
 sub gui_trans_deiconify () {
     db_trace ("gui_trans_deiconify");
-    foreach my $cmd (@commands_on_gui_deiconify) {
-	&$cmd;
-    }
+    foreach my $cmd (@commands_on_gui_deiconify) { &$cmd; }
 }
 sub state_trans_startup_to_offline () {
     db_trace ("state_trans_startup_to_offline");
-    $state = $state_offline;
-    foreach my $cmd (@commands_on_startup) {
-	&$cmd;
-    }
+    $state = $state_offline; foreach my $cmd (@commands_on_startup) { &$cmd; }
 }
 sub state_trans_offline_to_dialing () {
     db_trace ("state_trans_offline_to_dialing");
-    $state = $state_dialing;
-    foreach my $cmd (@commands_before_dialing) {
-	&$cmd;
-    }
+    $state = $state_dialing; foreach my $cmd (@commands_before_dialing) { &$cmd; }
 }
 sub state_trans_dialing_to_online () {
     db_trace ("state_trans_dialing_to_online");
-    $state = $state_online;
-    foreach my $cmd (@commands_on_connect) {
-	&$cmd;
-    }
+    $state = $state_online; foreach my $cmd (@commands_on_connect) { &$cmd; }
 }
 sub state_trans_dialing_to_offline () {
     db_trace ("state_trans_dialing_to_offline");
-    $state = $state_offline;
-    foreach my $cmd (@commands_on_connect_failure) {
-	&$cmd;
-    }
+    $state = $state_offline; foreach my $cmd (@commands_on_connect_failure) { &$cmd; }
 }
 sub state_trans_online_to_offline () {
     db_trace ("state_trans_online_to_offline");
-    $state = $state_offline;
-    foreach my $cmd (@commands_on_disconnect) {
-	&$cmd;
-    }
+    $state = $state_offline; foreach my $cmd (@commands_on_disconnect) { &$cmd; }
 }
 
 sub update_state () {
@@ -396,6 +433,7 @@ sub stop_log_scanner () {
 use Tk;
 use Tk::ROText;
 use Tk::ProgressBar;
+use Tk::Balloon;
 
 sub update_gui_offline ();
 sub update_gui_online ();
@@ -405,6 +443,9 @@ sub cb_dialup2 ( $ );
 sub cb_dialup ( $ );
 sub make_gui_mainwindow ();
 
+my %cfg_gui_default= (balloon_help => '1', show_rtc => '1', show_progress_bar => '1',
+		      graph_bgcolor => 'Grey85', graph_nrcolor => 'Grey70', graph_ercolor => 'Grey55');
+my %cfg_gui = %cfg_gui_default;
 my $main_widget;
 my @entries;
 my %labels;
@@ -414,6 +455,16 @@ my %widgets;
 my $rtc_widget;
 my $pb_widget;
 my ($offs_record, $offs_isp_widget, $offs_sum_widget, $offs_min_price_widget) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+
+
+sub set_color_entry ($$) {
+    my ($entry, $color) = @_;
+    $entry->configure(-foreground => $color, -background => $cfg_gui{'graph_bgcolor'});
+}
+sub get_color_entry ( $ ) {
+    my ($entry) = @_;
+    $entry->cget('-foreground');
+}
 
 sub update_gui_dial_state ( $ ) {
     my ($color) = @_;
@@ -465,9 +516,7 @@ sub check_automatic_disconnect () {
 }
 
 sub clear_gui_counter () {
-    my $isp;
-    foreach my $wid (%widgets) {
-	do { $isp = $wid; next; } unless ref $wid;
+    while (my ($isp, $wid) = each (%widgets)) {
 	my $entry=$$wid[$offs_sum_widget];
 	$entry->delete ('1.0', 'end');
 	$entry->configure (-background => $entry->parent->cget('-background'));
@@ -481,7 +530,31 @@ sub clear_gui_counter () {
 }
 
 sub update_gui_counter () {
-    my $isp;
+    my @sums;
+    my %sum_cache;
+
+    while (my ($isp, $wid) = each (%widgets)) {
+	my $sum = get_sum ($isp);
+	$sums[$#sums+1] = $sum;
+	$sum_cache{$isp} = $sum;
+    }
+
+    @sums = sort {$a <=> $b} @sums;
+    my $cheapest = $sums[$[];
+    my $most_expensive = $sums[$#sums];
+
+    while (my ($isp, $wid) = each (%widgets)) {
+	my $price = $sum_cache{$isp};
+	my $entry=$$wid[$offs_sum_widget];
+	$entry->delete ('1.0', 'end');
+	$entry->insert('1.0', sprintf ("%4.2f Pfg", $price));
+	my $bg_color = (($cheapest == $price) ? 'Green'
+			: (($most_expensive == $price) ? 'OrangeRed'
+			   : 'Yellow'));
+	$entry->configure (-background => $bg_color);
+    }
+}
+sub update_gui_counter_old () {
     my $cheapest=999999;
     my $most_expensive=0;
 
@@ -493,11 +566,7 @@ sub update_gui_counter () {
 	$most_expensive = $i if $most_expensive < $i;
     }
 
-    foreach my $wid (%widgets) {
-	if (! ref $wid) {
-	    $isp = $wid;
-	    next;
-	}
+    while (my ($isp, $wid) = each (%widgets)) {
 	my $price = get_sum ($isp);
 	my $entry=$$wid[$offs_sum_widget];
 	$entry->delete ('1.0', 'end');
@@ -511,12 +580,7 @@ sub update_gui_counter () {
 
 sub update_gui_pfg_per_minute ( $ ) {
     my ($curr_time)=@_;
-    my $isp;
-    foreach my $wid (%widgets) {
-	if (! ref $wid) {
-	    $isp = $wid;
-	    next;
-	}
+    while (my ($isp, $wid) = each (%widgets)) {
 	my $widget=$$wid[$offs_min_price_widget];
 	$widget->delete ('1.0', 'end');
 	$widget->insert('1.0', sprintf ("%.2f", Dialup_Cost::calc_price (get_isp_tarif($isp), $curr_time, 60)));
@@ -531,6 +595,14 @@ sub update_gui_rtc () {
 					$year + 1900, $mon + 1, $mday,
 					$hour, $min, $sec,
 					)); 
+}
+sub rtc_max_width () {
+    my $max_wday_len=0;
+    my $rtc_time_len=24;
+    foreach my $wday (@wday_names) {
+	if ((my $len = length ($wday)) > $max_wday_len) { $max_wday_len = $len; }
+    }
+    $max_wday_len + $rtc_time_len;
 }
 
 sub update_gui () {
@@ -608,7 +680,7 @@ sub make_diagram ( $$$$ ) {
     for (my $i=0; $i <= $xmax; $i+=60) {
 	my $x = $i * $xscale + $xoffs;
 	$canvas->createLine($x, -$yoffs, $x, -$yoffs + $height,
-			    -fill => ($i%300) ? 'Grey70' : 'Grey55');
+			    -fill => ($i%300) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
 	if (($i%300) == 0) {
 	    $canvas->createText($x, $height - $yoffs + 10,
 				-text => sprintf ("%u",  $i / 60));
@@ -619,7 +691,7 @@ sub make_diagram ( $$$$ ) {
     for (my $i=0; $i <= $ymax; $i+=10) {
 	my $y = -($i * $yscale + $yoffs - $height);
 	$canvas->createLine($xoffs, $y, $width + $xoffs,  $y,
-			    -fill => ($i%50) ? 'Grey80' : 'Grey65');
+			    -fill => ($i%50) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
 	if (($i%50) == 0) {
 	    $canvas->createText(10, $y, -text => sprintf ("%0.1f", $i / 100));
 	}
@@ -763,7 +835,7 @@ sub make_gui_graphwindow ( $$ ) {
     my ($xoffs, $yoffs) = (20, -20);
     my $win=$main_widget->Toplevel;
     $win->title("$APPNAME: Graph");
-    my $canvas=$win->Canvas(-width => $width + 40, -height => $height + 40, -background => 'Grey85');
+    my $canvas=$win->Canvas(-width => $width + 40, -height => $height + 40, -background => $cfg_gui{'graph_bgcolor'});
     $canvas->pack(-expand => 1, -fill => 'both');
     $canvas->Tk::bind('<Configure>' => sub { make_diagram ($win, $canvas, $xmax, $ymax) });
 }
@@ -825,84 +897,168 @@ sub make_gui_mainwindow () {
     $main_widget = MainWindow->new;
     $main_widget->title("$APPNAME");
     $main_widget->resizable (0, 0);
-
+    my $balloon = $main_widget->Balloon();
+    #### Menu ####
     my $menubar = $main_widget->Frame (-relief => 'raised');
-    my $file_menu_bt = $menubar->Menubutton (-text => $LSmenu_file);
+    my $file_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_file'});
     my $file_menu = $file_menu_bt->Menu();
     $file_menu_bt->configure (-menu => $file_menu);
-    my $edit_menu_bt = $menubar->Menubutton (-text => $LSmenu_edit);
+    my $edit_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_edit'});
     my $edit_menu = $edit_menu_bt->Menu();
     $edit_menu_bt->configure (-menu => $edit_menu);
-    my $view_menu_bt = $menubar->Menubutton (-text => $LSmenu_view);
+    my $view_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_view'});
     my $view_menu = $view_menu_bt->Menu();
     $view_menu_bt->configure (-menu => $view_menu);
+    my $help_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_help'});
+    my $help_menu = $help_menu_bt->Menu();
+    $help_menu_bt->configure (-menu => $help_menu);
 
 #    $file_menu->command (-label => 'Speichern');
-    $file_menu->command (-label => $LSmenu_file_hangup_now, -command => sub { cb_disconnect () });
+    $file_menu->command (-label => $LOC{'menu_file_hangup_now'}, -command => sub { cb_disconnect () });
     $file_menu->add ('checkbutton',
-		     -label =>  $LSmenu_file_hangup_defer,
+		     -label =>  $LOC{'menu_file_hangup_defer'},
 		     -variable => \$flag_stop_defer);
 		    
 
-    $file_menu->command (-label => $LSmenu_file_quit, -command => sub { cb_disconnect () ; exit });
+    $file_menu->command (-label => $LOC{'menu_file_save'}, -command => sub { write_config($cfg_file_usr); });
+    $file_menu->command (-label => $LOC{'menu_file_quit'}, -command => sub { cb_disconnect () ; exit });
 
-    $edit_menu->command (-label => $LSmenu_edit_options, -command => sub { cfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu_edit_peer_options'}, -command => sub { cfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu_edit_graph_options'}, -command => sub { color_cfg_editor_window (100,200) });
 
-    $view_menu->command (-label => 'Graph 5 min ...', -command => sub {make_gui_graphwindow(5 * $secs_per_min, 50) });
-    $view_menu->command (-label => 'Graph 15 min ...', -command => sub {make_gui_graphwindow(15 * $secs_per_min, 100) });
-    $view_menu->command (-label => 'Graph 30 min ...', -command => sub {make_gui_graphwindow(30 * $secs_per_min, 200) });
-    $view_menu->command (-label => 'Graph 1 h ...', -command => sub {make_gui_graphwindow(1 * $secs_per_hour, 400) });
-#    $view_menu->command (-label => 'Graph 2 h ...', -command => sub {make_gui_graphwindow(2 * $secs_per_hour, 800) });
+    $view_menu->command (-label => "$LOC{'menu_view_graph'} 5 min ...", -command => sub {make_gui_graphwindow(5 * $secs_per_min, 50) });
+    $view_menu->command (-label => "$LOC{'menu_view_graph'} 15 min ...", -command => sub {make_gui_graphwindow(15 * $secs_per_min, 100) });
+    $view_menu->command (-label => "$LOC{'menu_view_graph'} 30 min ...", -command => sub {make_gui_graphwindow(30 * $secs_per_min, 200) });
+    $view_menu->command (-label => "$LOC{'menu_view_graph'} 1 h ...", -command => sub {make_gui_graphwindow(1 * $secs_per_hour, 400) });
+#    $view_menu->command (-label => "$LOC{'menu_view_graph'} 2 h ...", -command => sub {make_gui_graphwindow(2 * $secs_per_hour, 800) });
     $view_menu->add ('separator');
-    $view_menu->command (-label => $LSmenu_view_stat, -command => sub {make_gui_statwindow() });
+    $view_menu->command (-label => $LOC{'menu_view_stat'}, -command => sub {make_gui_statwindow() });
     $view_menu->add ('separator');
-    $view_menu->add ('checkbutton', -label => $LSmenu_view_clock_off,
+    $view_menu->add ('checkbutton', -label => $LOC{'menu_view_clock'},
+		     -variable => \$cfg_gui{'show_rtc'},
+		     -command => sub { if (!defined $rtc_widget->manager) { $rtc_widget->pack(-side => 'top'); }
+				       else { $rtc_widget->packForget(); } });
+
+    $view_menu->add ('checkbutton', -label => $LOC{'menu_view_progress_bar'},
+		     -variable => \$cfg_gui{'show_progress_bar'},
+		     -command => sub { if (!defined $pb_widget->manager) {
+			                  $pb_widget->pack(-expand => 1, -fill => 'x');
+				       } else { $pb_widget->packForget(); } });
+
+    $help_menu->add ('checkbutton', -label => $LOC{'menu_help_balloon_help'},
+		     -variable => \$cfg_gui{'balloon_help'},
 		     -command => sub {
-			 if (!defined $rtc_widget->manager) {
-			     $rtc_widget->pack(-side => 'top');
-			     } else {
-				 $rtc_widget->packForget();
-			     }
-			 });
-    $view_menu->add ('separator');
-    $view_menu->command (-label => $LSmenu_view_about, -command => sub {make_gui_aboutwindow() });
+			 $balloon->configure(-state => ($cfg_gui{'balloon_help'} ? 'balloon' : 'none')); });
+    $balloon->configure(-state => ($cfg_gui{'balloon_help'} ? 'balloon' : 'none'));
 
+    $help_menu->add ('separator');
+    $help_menu->command (-label => $LOC{'menu_help_about'}, -command => sub {make_gui_aboutwindow() });
 
-    
+    $balloon->attach($file_menu,
+		     -state => 'balloon',
+		     -msg => ['',
+			      $LOC{'menu_file_hangup_now.help'},
+			      $LOC{'menu_file_hangup_defer.help'},
+			      $LOC{'menu_file_save.help'},
+			      $LOC{'menu_file_quit.help'},
+			      ],
+                     );
+    $balloon->attach($edit_menu,
+		     -state => 'balloon',
+		     -msg => ['',
+			      $LOC{'menu_edit_peer_options.help'},
+			      $LOC{'menu_edit_graph_options.help'},
+			      $LOC{'menu_edit_options.help'},
+			      ],
+                     );
+    $balloon->attach($view_menu,
+		     -state => 'balloon',
+		     -msg => ['',
+			      $LOC{'menu_view_graph.help'},
+			      $LOC{'menu_view_graph.help'},
+			      $LOC{'menu_view_graph.help'},
+			      $LOC{'menu_view_graph.help'},
+			      '',
+			      $LOC{'menu_view_stat.help'},
+			      '',
+			      'Enable/disable a digital clock',
+			      ],);
+
+    $balloon->attach($help_menu,
+		     -state => 'balloon',
+		     -msg => ['',
+			      $LOC{'menu_help_balloon_help.help'},
+			      '',
+			      $LOC{'menu_help_about.help'},
+			      ],
+                     );
 
     $menubar->pack(-expand => 1, -fill => 'x');
     $file_menu_bt->pack(-side => 'left');
     $edit_menu_bt->pack(-side => 'left');
     $view_menu_bt->pack(-side => 'left');
+    $help_menu_bt->pack(-side => 'right');
 
+    #### RTC ####
     my $rtc_frame = $main_widget->Frame;
-    $rtc_widget = $rtc_frame->ROText(-height => 1, -width => 34, -takefocus => 0, -insertofftime => 0);
+    $rtc_widget = $rtc_frame->ROText(-height => 1, -width => rtc_max_width (), -takefocus => 0, -insertofftime => 0);
 
     $rtc_frame->pack(-expand => 1, -fill => 'both' );
-    $rtc_widget->pack(-expand => 1, -fill => 'x');
+    $rtc_widget->pack(-expand => 1, -fill => 'x') if $cfg_gui{'show_rtc'};
 
-    foreach my $isp (@isps) {
-	next unless (get_isp_flag_active ($isp));
-	my $frame = $main_widget->Frame;
-	my $label = $frame->Button(-text => get_isp_label ($isp),
-				   -command => sub{ cb_dialup ($isp) } );
-	my $text = $frame->ROText(-height => 1, -width => 12, -takefocus => 0, -insertofftime => 0);
-	my $min_price = $frame->ROText(-height => 1, -width => 6, -takefocus => 0, -insertofftime => 0);
-
-	$label->configure(-background => 'Cyan') if ($isp eq $isp_curr);
-
-	$frame->pack(-expand => 1, -fill => 'x');
-	$label->pack(-expand => 1, -fill => 'x', -side => 'left');
-	$min_price->pack(-side => 'right');
-	$text->pack(-side => 'right');
-	$entries[$#entries+1] = $text;
-	$labels{$isp} = $label;
-	$widgets{$isp} = [0, $label, $text, $min_price];
-    }
+    #### Controls ####
+	my $button_frame = $main_widget->Frame;
     {
-	my $pb = $main_widget->ProgressBar
+	my $row=0;
+	my $usepack=0;
+
+	unless ($usepack) {
+	    my $label;
+	    $label=$button_frame->Label(-text => $LOC{'win_main_start'})->grid(-row => $row, -column => 0);
+	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_start.help'}) if $balloon;
+	    $label=$button_frame->Label(-text => $LOC{'win_main_money'})->grid(-row => $row, -column => 1);
+	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_money.help'}) if $balloon;
+	    $label=$button_frame->Label(-text => $LOC{'win_main_rate'})->grid(-row => $row, -column => 2);
+	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_rate.help'}) if $balloon;
+	    $row++;
+	}
+	foreach my $isp (@isps) {
+	    next unless (get_isp_flag_active ($isp));
+	    my $frame = $usepack ? $button_frame->Frame : $button_frame;
+		
+	    my $cmd_button = $frame->Button(-text => get_isp_label ($isp),
+				       -command => sub{ cb_dialup ($isp) } );
+	    my $text = $frame->ROText(-height => 1, -width => 10, -takefocus => 0, -insertofftime => 0);
+	    my $min_price = $frame->ROText(-height => 1, -width => 5, -takefocus => 0, -insertofftime => 0);
+
+	    $cmd_button->configure(-background => 'Cyan') if ($isp eq $isp_curr);
+
+	    if ($usepack) {
+		$cmd_button->pack(-expand => 1, -fill => 'x', -side => 'left');
+		$min_price->pack(-side => 'right');
+		$text->pack(-side => 'right');
+		$frame->pack(-expand => 1, -fill => 'x');
+	    } else {
+		$cmd_button->grid(-column => 0, -row => $row, -sticky => "ew");
+		$text->grid(-column => 1, -row => $row, -sticky => "ew");
+		$min_price->grid(-column => 2, -row => $row, -sticky => "ew");
+	    }
+	    $entries[$#entries+1] = $text;
+	    $labels{$isp} = $cmd_button;
+	    $widgets{$isp} = [0, $cmd_button, $text, $min_price];
+	    $row++;
+	}
+	    $button_frame->pack(-expand => 1, -fill => 'x');
+    }
+    my @tmp = $button_frame->gridBbox;
+    db_trace ("@tmp");
+
+    #### Progress Bar ####
+    {
+	my $pb_frame=$main_widget->Frame();
+	my $pb = $pb_frame->ProgressBar
 	    (
-	     -length => 250,
+#	     -length => 220,
 	     -width => 8,
 	     -from => 100,
 	     -to => 0,
@@ -913,12 +1069,14 @@ sub make_gui_mainwindow () {
 	     -pady => 1,
 	     -padx => 1,
 	     );
-	$pb->pack();  # Tk::ProgressBar seems to be broken -bw/29-Jun-00
+	$pb->pack(-expand => 1, -fill => 'x') if $cfg_gui{'show_progress_bar'};
 	$pb_widget = $pb;
+	$pb_frame->pack(-expand => 1, -fill => 'x');
     }
     {
 	my $frame = $main_widget->Frame;
-	my $b1 = $frame->Button(-text => "$LSbutton_main_hangup", -command => sub{cb_disconnect});
+	my $b1 = $frame->Button(-text => "$LOC{'button_main_hangup'}", -command => sub{cb_disconnect});
+	$balloon->attach($b1, -balloonmsg => 'Disconnect immediatly by issuing "Down Cmd"') if $balloon;
 	my $b2 = $frame->Button(-text => 'Graph', -command => sub{make_gui_graphwindow(30 * $secs_per_min, 200)});
 	my $b3 = $frame->Button(-text => 'Exp-Graph', -command => sub{exp_make_gui_graphwindow()});
 	
@@ -940,7 +1098,6 @@ sub make_gui_mainwindow () {
 #	state_trans_dialing_to_online ();
     }
 }
-
 
 sub main_window_iconify () {
     $main_widget->iconify;
@@ -998,12 +1155,14 @@ sub escape_string ($) {
     $s =~ s/\%/\%25/g;
     $s =~ s/\'/\%27/g;
     $s =~ s/\"/\%22/g;
+    $s =~ s/\n/\%0A/g;
 #    $s =~ s/\=/\%3d/g;
     $s;
 }
 sub unescape_string ($) {
     my ($s) = @_;
 #    $s =~ s/\%3d/\=/g;
+    $s =~ s/\%0A/\n/ig;
     $s =~ s/\%27/\'/g;
     $s =~ s/\%22/\"/g;
     $s =~ s/\%25/\%/g;
@@ -1014,18 +1173,25 @@ sub read_config ($) {
     my ($file) =@_;
     if (open IN, ("$file")) {
 	while (<IN>) {
-	    if (/^\<peer /) {
+	    if (/^\<([a-z]+) /) {
+		my $tag = $1; 
 		my @result;
 		while (m/\b([a-z_]+)\=["']([^\"\']*)['"]/g) {
 		    my ($key, $val) = ($1, unescape_string ($2));
-		    if (defined $n2i{$key}) {
-			my $idx=$n2i{$key};
-			$result[ $idx ]=$val;
-			#db_trace ("key=<$key> val=<$val> idx=<$idx>");
+		    if ($tag eq "peer") {
+			if (defined $n2i{$key}) {
+			    my $idx=$n2i{$key};
+			    $result[ $idx ]=$val;
+			    #db_trace ("key=<$key> val=<$val> idx=<$idx>");
+			}
+		    } elsif ($tag eq "gui") {
+			$cfg_gui{"$key"} = $val;
 		    }
 		}
-		$isps[$#isps+1]=$result[0];
-		set_isp_cfg (\@result);
+		if ($tag eq "peer" && defined $result[0]) {
+		    $isps[$#isps+1]=$result[0];
+		    set_isp_cfg (\@result);
+		}
 	    }
 	}
 	close IN;
@@ -1035,7 +1201,7 @@ sub read_config ($) {
     }
 }
 
-
+# TODO-bw/28-Aug-00: allow selective saving
 sub write_config ($) {
     my ($file) =@_;
     if (open OUT, (">$file")) {
@@ -1050,6 +1216,20 @@ sub write_config ($) {
 			$cfg_att_names[$cfg_color], escape_string (get_isp_color($isp)),
 			$cfg_att_names[$cfg_tarif], escape_string (get_isp_tarif($isp)),
 			$cfg_att_names[$cfg_active], escape_string (get_isp_flag_active($isp)));
+
+	}
+	{
+	    my $line="";
+	    my $count=0;
+	    while (my ($key, $val) = each (%cfg_gui)) {
+		if ("$cfg_gui_default{$key}" ne $val) {
+		    $line .= "$key='" . escape_string ($val) . "' ";
+		    db_trace ("key=<$key> val=<$val> count=<$count>");
+		}
+	    }
+	    if ($line) {
+		print OUT '<gui ' . $line . "/>\n";
+	    }
 	}
 	close OUT;
 	1;
@@ -1059,88 +1239,162 @@ sub write_config ($) {
 }
 
 # config editor gui
-sub mask_window ($$$$$) {
-    my ($parent, $lb, $index, $isp, $entries) = @_;
+=pod
 
-    my $top=$parent->Frame;
+=head2 NAME
 
-    my $mask_frame = $top->Frame;
+mask_widget() - produce pairs of key/value-widgets
 
-    my $isp_cfg = $isp_cfg_map{$isp};
+=head2 PARAMETERS and RESULT
 
-    my $row;
-    foreach $row (0 .. $#cfg_labels) {
-	my ($key, $val) = ($cfg_labels[$row], $$isp_cfg[$row]);
+=over 4
+
+=item MASK_FRAME - Created widgets will be direct childs of it
+
+=item ROW - Row on which our first new produced widget pair starts.
+
+=item WIDGETS - Array to keep produced value widgets (Entry, Checkbox)
+
+=item TYPES - Array holding type info strings ('text', 'flag', 'color', 'label')
+
+=item KEYS - Array holding key strings (using for label names)
+
+=item VALOC - Array holding value strings (will be used as defaults on value widgets)
+
+=item RESULT - row-number after our last produced widget
+
+=back
+
+
+=head2 DESCRIPTION
+
+=cut
+
+sub mask_widget ($$$$$$) {
+    my ($mask_frame, $row, $widgets, $types, $keys, $vals) = @_;
+    for my $i (0..$#$keys) {
+	my ($key, $val) = ($$keys[$i], $$vals[$i]);
+	$val="" unless defined $val;
+	db_trace("row:$row");
 	$mask_frame->Label(-text => "$key")->grid(-row => $row, -column => 0, -sticky => "e");
-	if ($cfg_types[$row] eq 'text') {
+	if ($$types[$i] eq 'text') {
 	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1);
 	    $entry->insert(0, $val);
-	    $$entries[$row] = $entry;
-	} elsif ($cfg_types[$row] eq 'flag') {
+	    $$widgets[$i] = $entry;
+	} elsif ($$types[$i] eq 'flag') {
 	    my $cb = $mask_frame->Checkbutton()->grid(-row => $row, -column => 1, -sticky => "w");
 	    $cb->select if ($val == '1');
-	    $$entries[$row] = $cb;
+	    $$widgets[$i] = $cb;
+	} elsif ($$types[$i] eq 'label') {
+	    my $label = $mask_frame->Label(-text => "$val")->grid(-row => $row, -column => 1, -sticky => "w");
+	    $$widgets[$i] = $label;
+	} elsif ($$types[$i] eq 'color') {
+	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1);
+	    set_color_entry ($entry, $val);
+
+	    $entry->insert(0, $val);
+	    $$widgets[$i] = $entry;
+	    $mask_frame->Button
+		(-text => "$key", -command => sub
+		 {
+		     my $old_color = get_color_entry ($entry);
+		     my $color = $mask_frame->chooseColor(-parent => $mask_frame,
+							  -initialcolor => "$old_color");
+		     if ($color) {
+			 $entry->delete(0, 'end');
+			 $entry->insert(0, "$color");
+			 set_color_entry ($entry, $color);
+		     }
+		 } )->grid(-row => $row, -column => 0, -sticky => "ew");
+
+	    # Toggling color preview in Entry widget using MousePress events
+	    my ($sub_preview_on, $sub_preview_off);
+	    $sub_preview_on = sub {
+		set_color_entry ($entry, $entry->get());
+		$entry->Tk::bind ('<ButtonPress>', $sub_preview_off);
+	    };
+	    $sub_preview_off = sub {
+		$entry->configure (-fg => $mask_frame->cget('-fg'),
+				   -bg => $mask_frame->cget('-bg'));
+		$entry->Tk::bind ('<ButtonPress>', $sub_preview_on);
+	    };
+	    $entry->Tk::bind ('<ButtonPress>', $sub_preview_off);
 	}
+	$row++;
     }
 
     $mask_frame->pack(-side => 'top');
     db_trace ("gridSize: " . $mask_frame->gridSize);
-
-    my $frame1 = $top->Frame;
-    $frame1->pack(-fill => 'x');
-    $frame1->Button(-text => 'Cancel', -command => sub{edit_bt_cancel($top)})->pack(-side => 'left');
-    $frame1->Button(-text => 'Apply', -command => sub{edit_bt_ok($top, $lb, $index, $entries)})->pack(-side => 'right');
-    $top;
+    $row;
 }
 
-my @cfg_isp_cfg_map;
+my @cfg__isp_cfg_cache;
 sub edit_bt_ok($$$$) {
-    my ($frame, $lb, $index, $my_entries) = @_;
-    my @tmp_entries;
+    my ($frame, $lb, $index, $widgets) = @_;
+    my @config_values;
 
-    foreach my $i (0..$#$my_entries) {
+    # copy values from widgets to array @config_values
+    foreach my $i (0..$#$widgets) {
 	if ($cfg_types[$i] eq 'text') {
-	    $tmp_entries[$#tmp_entries+1] = $$my_entries[$i]->get;
+	    $config_values[$#config_values+1] = $$widgets[$i]->get;
+	} elsif ($cfg_types[$i] eq 'color') {
+	    $config_values[$#config_values+1] = $$widgets[$i]->get;
+	    set_color_entry ($$widgets[$i], $$widgets[$i]->get);
 	} elsif ($cfg_types[$i] eq 'flag') {
-	    $tmp_entries[$#tmp_entries+1] = $$my_entries[$i]->{'Value'};
+	    $config_values[$#config_values+1] = $$widgets[$i]->{'Value'};
 	}
     }
-    set_isp_cfg (\@tmp_entries);
 
-    for (my $i=0; $i < $#cfg_isp_cfg_map; $i++) {
-	my $r = $cfg_isp_cfg_map[$i];
-	$cfg_isp_cfg_map[$i] = \@tmp_entries if ($$r[$cfg_isp] eq $tmp_entries[0]);
+    # update (overwrite) global configuration for this ISP
+    # (widgets are currently in same order as global ISP config table is
+    #  so we can just pass our value array to set_isp_cfg())
+    set_isp_cfg (\@config_values);
+
+    # update our configuration cache to reflect change in global configuration made above
+    my $isp = $config_values[0];
+    foreach my $i (0..$#cfg__isp_cfg_cache) {
+	my $r = $cfg__isp_cfg_cache[$i];
+	if ($$r[$cfg_isp] eq $isp) {
+	    $cfg__isp_cfg_cache[$i] = \@config_values;
+	}
     }
 }
 
 # TODO: TAB switching order
-sub cost_mask_window ($$$) {
-    my ($parent, $matrix, $entries) = @_;
+sub cost_mask_window ($$$$) {
+    my ($parent, $matrix, $entries, $balloon) = @_;
     my $labels=$$matrix[0];
+    my $balloons=$$matrix[2];
     my $fmts=$$matrix[1];
-    my ($rows, $cols) = ($#$matrix-1, $#$labels+1);
+    my $start_matrix=3;
+    my $rows = scalar @$matrix - $start_matrix;
+    my $cols = scalar @$labels;
     my $top = $parent->Frame;
     my $table_frame = $top->Frame;
     $table_frame->pack(-side => 'top');
     ## make table columns
     for (my $c=0; $c < $cols; $c++) {
 	my @wids;
-	# make column label
-	$table_frame->Label(-text => $$labels[$c])->grid(-row => 0, -column => $c);
+	# make column label (table head)
+	my $label = $table_frame->Label(-text => $$labels[$c])->grid(-row => 0, -column => $c);
+	# atach balloon help to table head
+	$balloon->attach($label, -balloonmsg => $$balloons[$c]) if $balloon && $$balloons[$c];
 	# make column cells
-	for (my $r=2; $r < $rows+2; $r++) {
+	foreach my $r ($start_matrix..$#$matrix) {
 	    if ($$fmts[$c] =~ /^cstring:(\d+)/) {
 		my $width=$1;
 		my $wid = $table_frame->Entry(-width => $width);
 		my $col_matrix= $$matrix[$r];
 		# insert data from COL_MATRIX
 		$wid->insert(0, $$col_matrix[$c]);
+#		$balloon->attach($wid, -balloonmsg => $$balloons[$c]) if $balloon && $$balloons[$c];
 		$wid->grid(-row => $r, -column => $c);
 		$wids[$#wids+1] = $wid;
 	    } elsif (($$fmts[$c] =~ /^checkbox$/)) {
 		my $wid = $table_frame->Checkbutton();
 		my $col_matrix= $$matrix[$r];
 		$wid->select if $$col_matrix[$c];
+#		$balloon->attach($wid, -balloonmsg => $$balloons[$c]) if $balloon && $$balloons[$c];
 		$wid->grid(-row => $r, -column => $c);
 	    }
 	}
@@ -1149,7 +1403,7 @@ sub cost_mask_window ($$$) {
     my $button_frame = $top->Frame;
     $button_frame->pack(-side => 'bottom');
     foreach my $lab (('Append Row', 'Insert Row', 'Remove Row')) {
-	my $wid = $button_frame->Button (-text => $lab);
+	my $wid = $button_frame->Button (-text => $lab, -state => 'disabled');
 	$wid->pack (-side => 'left');
     }
     $top;
@@ -1193,13 +1447,33 @@ sub cost_mask_window_old ($$$) {
 ## 1st row are labels.  2nd row are data-type-IDs.  In 3rd row starts data.
 sub cost_mask_data ($) {
     my ($rate_name) = @_;
-    my @labels = ('Start Datum', 'End Datum', 'Wochentage', 'Start Zeit',
-		  'End Zeit', 'Pfg/min', 'sec/Takt', 'Pfg/Einw.', "FE", "ZT",);
+    my @labels = ($LOC{'win_rate_date_start'},
+		  $LOC{'win_rate_date_end'},
+		  $LOC{'win_rate_weekdays'},
+		  $LOC{'win_rate_daytime_start'},
+		  $LOC{'win_rate_daytime_end'},
+		  $LOC{'win_rate_money_per_min'},
+		  $LOC{'win_rate_secs_per_unit'},
+		  $LOC{'win_rate_money_per_connect'},
+		  $LOC{'win_rate_free_linkup'},
+		  $LOC{'win_rate_overlay_rate'},
+		  );
+    my @balloons = ($LOC{'win_rate_date_start.help'},
+		    $LOC{'win_rate_date_end.help'},
+		    $LOC{'win_rate_weekdays.help'},
+		    $LOC{'win_rate_daytime_start.help'},
+		    $LOC{'win_rate_daytime_end.help'},
+		    $LOC{'win_rate_money_per_min.help'},
+		    $LOC{'win_rate_secs_per_unit.help'},
+		    $LOC{'win_rate_money_per_connect.help'},
+		    $LOC{'win_rate_free_linkup.help'},
+		    $LOC{'win_rate_overlay_rate.help'},
+		    );
     my @matrix;
-
     $matrix[$#matrix+1] = \@labels;
     $matrix[$#matrix+1] = ['cstring:10','cstring:10','cstring:10','cstring:10',
 			   'cstring:10','cstring:5','cstring:4','cstring:4', 'checkbox', 'checkbox'];
+    $matrix[$#matrix+1] = \@balloons;
     my $rate = Dialup_Cost::get_rate ($rate_name);
     foreach my $r (@$rate) {
 	my @sub_entries = ("","","","","","","","");
@@ -1237,7 +1511,7 @@ sub cost_mask_data ($) {
 sub parse_cost_mask_data ($) {
     my ($matrix) = @_;
     my @result;
-    my $row_idx=-2;
+    my $row_idx=-3;
     foreach my $r (@$matrix) {
 	next if $row_idx++ < 0; # skip header and type-definition
 	my @res_cond=(0, 0, 0);
@@ -1289,32 +1563,33 @@ sub item_edit_bt($$) {
     my @entries;
 
     my $win = $main_widget->Toplevel;
+    my $balloon = $win->Balloon();
     my $isp = $lb->get($index);
     my $isp_rate = get_isp_tarif ($isp);
     $win->title("$APPNAME: cost for rate <$isp_rate>");
-    cost_mask_window ($win, cost_mask_data ($isp_rate), \@entries)->pack();
-#    mask_window ($main_widget->Toplevel, $lb, $index, $lb->get($index), \@entries)->pack();
+    cost_mask_window ($win, cost_mask_data ($isp_rate), \@entries, $balloon)->pack();
 };
-#my @cfg_isp_cfg_map;
-sub cfg_update_entries ($$) {
-    my ($idx, $entries) = @_;
-    my $cfg = $cfg_isp_cfg_map[$idx];
+
+sub cfg_update_gadgets ($$) {
+    my ($idx, $gadgets) = @_;
+    my $cfg = $cfg__isp_cfg_cache[$idx];
     for (my $i=0; $i < $cfg_SIZE; $i++) {
-#	$$cfg[$i]=$$entries[$i]->get();
+#	$$cfg[$i]=$$gadgets[$i]->get();
 	if ($cfg_types[$i] eq 'text') {
-	    $$entries[$i]->delete(0, 'end');
-	    $$entries[$i]->insert(0, $$cfg[$i]);
+	    $$gadgets[$i]->delete(0, 'end');
+	    $$gadgets[$i]->insert(0, $$cfg[$i]);
+	} elsif ($cfg_types[$i] eq 'color') {
+	    $$gadgets[$i]->delete(0, 'end');
+	    $$gadgets[$i]->insert(0, $$cfg[$i]);
+	    set_color_entry ($$gadgets[$i], $$cfg[$i]);
 	} elsif ($cfg_types[$i] eq 'flag') {
-	    if ($$cfg[$i]) { $$entries[$i]->select; } else { $$entries[$i]->deselect; }
+	    if ($$cfg[$i]) { $$gadgets[$i]->select; } else { $$gadgets[$i]->deselect; }
 	}
     }
 }
 
 sub cfg_editor_window ($$) {
     my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
-    my ($width, $height) = (500, 350);
-    my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
-    my ($xoffs, $yoffs) = (20, -20);
     my $win=$main_widget->Toplevel;
     $win->title("$APPNAME: Config");
 
@@ -1335,14 +1610,18 @@ sub cfg_editor_window ($$) {
 #my $view_bt = $frame3->Button(-text => 'View', -command => sub{view_bt($box)});
 
     my $frame2 = $win->Frame;
-#    my $exit_bt = $frame2->Button(-text => 'Cancel', -command => 'exit');
-    my $exit_bt = $frame2->Button(-text => 'Cancel', -command => sub{ $frame2->chooseColor();});
-    my $save_bt = $frame2->Button(-text => 'Save', -command => sub{save_bt($box, $cfg_file_usr)});
+    my $exit_bt = $frame2->Button(-text => 'Close',
+				  -command => sub { undef @cfg__isp_cfg_cache; $win->destroy() });
+#    my $exit_bt = $frame2->Button(-text => 'Cancel', -command => sub{ $frame2->chooseColor();});
+    my $save_bt = $frame2->Button(-text => 'Save',
+				  -command => sub{ save_bt($box, $cfg_file_usr);
+						   undef @cfg__isp_cfg_cache;
+						   $win->destroy() });
 
     foreach (@isps) {
 	$box->insert('end', $_);
 	my @cfg;
-	$cfg_isp_cfg_map[$#cfg_isp_cfg_map+1] = \@cfg;
+	$cfg__isp_cfg_cache[$#cfg__isp_cfg_cache+1] = \@cfg;
 	for (my $i=0; $i < $cfg_SIZE; $i++) {
 	    $cfg[$#cfg+1] =  get_isp_cfg ($_, $i);
 	}
@@ -1355,8 +1634,17 @@ sub cfg_editor_window ($$) {
     $scroll->pack(-side => 'right', -fill => 'y');
 #$item_entry->pack(-fill => 'x');
 
-    my @entries;
-    mask_window ($win, $box, 0, $box->get(0), \@entries)->pack();
+    {
+	my $isp = $box->get(0);
+	my $top = $win->Frame;
+	mask_widget ($top->Frame, 0, \@entries, \@cfg_types, \@cfg_labels, $isp_cfg_map{$isp});
+#exp#	$entries[0]->configure(-invcmd => 'bell', -vcmd => sub { 0; }, -validate => 'focusout');
+	my $frame1 = $top->Frame;
+	$frame1->Button(-text => 'Cancel', -command => sub{edit_bt_cancel($top)})->pack(-side => 'left');
+	$frame1->Button(-text => 'Apply', -command => sub{edit_bt_ok($top, $box, 0, \@entries)})->pack(-side => 'right');
+	$frame1->pack(-fill => 'x');
+	$top->pack(-expand => 1, -fill => 'both');
+    }
 
     $frame3->pack(-fill => 'x');
 #$view_bt->pack(-side => 'bottom');
@@ -1368,13 +1656,75 @@ sub cfg_editor_window ($$) {
     $save_bt->pack(-side => 'right');
     $exit_bt->pack(-side => 'left');
 
-    $box->Tk::bind ('<ButtonRelease>', sub { cfg_update_entries ($box->index('active'), \@entries) });
+    $box->Tk::bind ('<ButtonRelease>', sub { cfg_update_gadgets ($box->index('active'), \@entries) });
+}
+
+sub color_cfg_editor_window ($$) {
+    my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
+    my $win=$main_widget->Toplevel;
+    $win->title("$APPNAME: Graph Colors");
+
+    my @widgets;
+    my @types = ('color', 'color', 'color');
+    my @keys = ('Background Color', 'Ruler Color', 'Ruler2 Color');
+    my @cfg_keys = ('graph_bgcolor', 'graph_nrcolor', 'graph_ercolor');
+    my @vals;
+    my @refs;
+    my @defaults;
+    foreach my $i (0..$#cfg_keys) {
+	if (defined $cfg_gui{$cfg_keys[$i]}) {
+	    $vals[$i] = $cfg_gui{$cfg_keys[$i]};
+	    $refs[$i] = \$cfg_gui{$cfg_keys[$i]};
+	    $defaults[$i] = $cfg_gui_default{$cfg_keys[$i]};
+	}
+    }
+    my $top = $win->Frame;
+    my $mask_frame = $top->Frame;
+    mask_widget ($mask_frame, 0, \@widgets, \@types, \@keys, \@vals);
+    $mask_frame->pack(-expand => 1, -fill => 'both');
+
+    my $frame1 = $top->Frame;
+    $frame1->Button(-text => 'Cancel', -command => sub { $win->destroy(); })->pack(-side => 'left' );
+    $frame1->Button(-text => 'Apply',
+		    -command => sub
+		    { foreach my $i (0...$#refs) {
+			if ($types[$i] eq 'color' or $types[$i] eq 'text') {
+			    my $ref = $refs[$i]; 
+			    $$ref = $widgets[$i]->get();
+			    if ($types[$i] eq 'color') {
+				set_color_entry ($widgets[$i], $widgets[$i]->get());
+			    }
+			}
+		    }
+		      $win->destroy ();
+		    })->pack(-side => 'right');
+    $frame1->Button(-text => 'Default',
+		    -command => sub
+		    { foreach my $i (0..$#cfg_keys) {
+			my $ref = $refs[$i];
+			my $val = $defaults[$i];
+			my $wid = $widgets[$i];
+			#$$ref = $val;
+			if ($types[$i] eq 'color' or $types[$i] eq 'text') {
+			    $wid->delete(0, 'end');
+			    $wid->insert(0, "$val");
+			    if ($types[$i] eq 'color') {
+				set_color_entry ($wid, $val);
+			    }
+			}
+		    }
+		  })->pack();
+    $frame1->pack(-fill => 'x');
+    $top->pack(-expand => 1, -fill => 'both');
 }
 
 ########################################################################################
 
 read_config((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file) or die;
 Dialup_Cost::read_data((-e $cost_file_usr) ? $cost_file_usr : $cost_file);
+
+db_trace("LOC hash: " . scalar %LOC);
+db_trace("cfg_gui hash: " . scalar %cfg_gui );
 
 make_gui_mainwindow();
 
