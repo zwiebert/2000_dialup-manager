@@ -1,26 +1,21 @@
 package Dialup_Cost;
+## $Id$
+
 use strict;
 use Time::Local;
 
 BEGIN {
     use Exporter   ();
     use vars       qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-    $VERSION = do { my @r = (q$Revision: 1.1 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r }; # must be all one line, for MakeMaker
-
+    $VERSION = do { my @r = (q$Revision: 1.1 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
     @ISA         = qw(Exporter);
     @EXPORT      = qw();
-    %EXPORT_TAGS = ( );		# eg: TAG => [ qw!name1 name2! ],
-
-    # your exported package globals go here,
-    # as well as any optionally exported functions
+    %EXPORT_TAGS = ( );
     @EXPORT_OK   = qw();
 }
 use vars      @EXPORT_OK;
-
-# non-exported package globals go here
-use vars      qw($offs_pfg_per_clock $offs_secs_per_clock $offs_sw_start_time $offs_pfg_per_connection $offs_rate_id
-		 &tarif($$) &calc_price($$$) &write_data($) &read_data($)
-		 &write_data2($) &read_data2($) &write_list($) &read_list($) &get_rate($));
+use vars qw($offs_pfg_per_clock $offs_secs_per_clock $offs_sw_start_time
+	    $offs_pfg_per_connection $offs_rate_id);
 
 # initialize package globals, first exported ones
 
@@ -82,7 +77,7 @@ my $db_start_time = time ();
 #-- begin library
 
 
-sub write_list ($) {
+sub write_list( $ ) {
     my ($l) = @_;
     my $res = '[';
     foreach my $i (@$l) {
@@ -99,7 +94,7 @@ sub write_list ($) {
     }
     $res .= '], ';
 }
-sub write_data2 ($) {
+sub write_data2( $ ) {
     my ($dat) = @_;
     my $res='';
     foreach my $i (%$dat) {
@@ -114,11 +109,11 @@ sub write_data2 ($) {
     $res;
 }
 
-sub write_data ($) {
+sub write_data( $ ) {
     print write_data2 ($tarif_data);
 }
 
-sub read_list ($) {
+sub read_list( $ ) {
     my ($in) = @_;
     my $res = [];
     while ($$in) {
@@ -140,7 +135,7 @@ sub read_list ($) {
     }
     $res;
 }
-sub read_data2 ($) {
+sub read_data2( $ ) {
     my ($in) = @_;
     my %res;
 
@@ -153,7 +148,7 @@ sub read_data2 ($) {
     }
     \%res;
 }
-sub read_data ($) {
+sub read_data( $ ) {
     my ($file) =@_;
     my $data='';
     # slurp in data file
@@ -163,7 +158,7 @@ sub read_data ($) {
 	}
 	close IN;
     } else {
-	exit 1;
+	die "error: cannot open file <$file>\n";
     }
     # parse data
     my $res = read_data2 ($data);
@@ -238,7 +233,7 @@ sub calc_price ( $$$ ) {
     $result;
 }
 
-sub get_rate($) {
+sub get_rate( $ ) {
     $$tarif_data{$_[0]}; # XXX
 }
 

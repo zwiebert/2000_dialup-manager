@@ -1,12 +1,13 @@
 # GNU make file
-#
+## $Id$
+
 root=/
 prefix:=$(root)usr/local
 apphome=$(root)usr/local/share/dialup_manager
 bindir=$(prefix)/bin
 docdir=$(apphome)
 
-appfiles=dialup_manager.pl dialup_manager.sh Dialup_Cost.pm Graphs.pm\
+appfiles=dm.pm tkdialup.pl dialup_manager.sh Dialup_Cost.pm Graphs.pm\
  dialup_cost.data dialup_manager.cfg\
  status_reader.pl locale-de about-de about-en\
  stat_new.pl stat_new.sh
@@ -15,7 +16,7 @@ cfg_src=about-en.in about-de.in
 examplefiles=dialup_manager.cfg dialup_cost.data
 docfiles=README.de README INSTALL.de INSTALL ChangeLog
 
-sources=dialup_manager.pl dialup_manager.sh Dialup_Cost.pm Graphs.pm\
+sources=dm.pm tkdialup.pl dialup_manager.sh Dialup_Cost.pm Graphs.pm\
  status_reader.pl about-en.in about-de.in tkdialup.in \
  Makefile Makefile-deb configure.sed\
  about-en.in about-de.in locale-de \
@@ -38,6 +39,7 @@ tkdialup: tkdialup.in force
 
 rcs_init: force
 	ci -i -t/dev/null $(sources) 
+rcs_co: $(sources)
 
 install: force
 	install -d $(apphome) $(prefix)/bin
@@ -49,13 +51,16 @@ install: force
 clean: force
 	rm -f $(targets) $(opt_targets)
 
+TAGS: dm.pm tkdialup.pl Dialup_Cost.pm Graphs.pm
+	etags dm.pm tkdialup.pl Dialup_Cost.pm Graphs.pm
+
 # User Distributions
 ## generic
 dist.tgz: targets force
 	rm -rf ./dist
 	$(MAKE) root=./dist/ install
 	cd ./dist && tar -vczf ../dist.tgz .
-dist.deb: force
+dist.deb: force $(sources)
 	fakeroot $(MAKE) -f ./Makefile-deb dist.deb
 uninstall:
 	rm -rf $(apphome)

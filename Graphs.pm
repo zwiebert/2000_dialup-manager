@@ -1,38 +1,22 @@
 package Graphs;
+## $Id$
+
 use strict;
 
 BEGIN {
     use Exporter   ();
     use vars       qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-    # set the version for version checking
-    $VERSION     = 1.00;
-    # if using RCS/CVS, this may be preferred
-    $VERSION = do { my @r = (q$Revision: 1.2 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r }; # must be all one line, for MakeMaker
-
+    $VERSION = do { my @r = (q$Revision: 1.3 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
     @ISA         = qw(Exporter);
     @EXPORT      = qw(&add_graphs &steigung &extend_graphs);
-    %EXPORT_TAGS = ( );		# eg: TAG => [ qw!name1 name2! ],
-
-    # your exported package globals go here,
-    # as well as any optionally exported functions
+    %EXPORT_TAGS = ( );
     @EXPORT_OK   = qw(&add_graphs($$));
 }
-use vars      @EXPORT_OK;
+use vars @EXPORT_OK;
 
-# non-exported package globals go here
-use vars      qw();
+use vars qw();
 
-# initialize package globals, first exported ones
 
-# then the others (which are still accessible as $Some::Module::stuff)
-
-# all file-scoped lexicals must be created before
-# the functions below that use them.
-
-# file-private lexicals go here
-
-# make all your functions, whether exported or not;
-# remember to put something interesting in the {} stubs
 sub steigung ( $ ) {
     my ($rg) = @_;
     die unless ref ($rg);
