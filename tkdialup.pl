@@ -1,11 +1,18 @@
 #! /usr/bin/perl -w
 ## $Id: tkdialup.pl,v 1.9 2000/09/10 06:50:46 bertw Exp bertw $
 
+use strict;
+my $cfg_dir;
+
 BEGIN {
   $ENV{'HOME'} = '' unless defined $ENV{'HOME'}; # windows default (current volume root)
+  $cfg_dir = $ENV{'HOME'} . "/.tkdialup";
+  unless (-e $cfg_dir) {
+    mkdir ($cfg_dir, 0755);
+    rename ($ENV{"HOME"} . "/.dialup_manager.cfg", $cfg_dir . "/app.cfg");
+  }
 }
 
-use strict;
 use locale;
 use POSIX qw(locale_h);
 use dm;
@@ -27,6 +34,8 @@ my %cfg_gui_default= ('.config_tag' => 'gui',
 		      country => '.automatic',
 		      rtc_strftime_fmt => ' %a %Y-%m-%d %H:%M:%S ',
 	#	      rtc_strftime_fmt => '%c',
+		      peer_default_up_cmd => 'pon',
+		      peer_default_down_cmd => 'poff',
 		      lang => '.automatic');
 my %cfg_gui = %cfg_gui_default;
 $cfg_gui{'.config_default'}=\%cfg_gui_default;
@@ -35,7 +44,7 @@ my %cfg_tkdialup= ('.config_version' => '1.0',
 		   $dm::cfg_sock{'.config_tag'} => \%dm::cfg_sock,
 		  );
 my $cfg_file="${progdir}/dialup_manager.cfg";
-my $cfg_file_usr=$ENV{"HOME"} . "/.dialup_manager.cfg";
+my $cfg_file_usr=$cfg_dir . "/app.cfg";
 ## ======================= Locale ==================================
 my $lang_has_changed=1;  # force reinit
 my $current_applang="";
@@ -46,9 +55,14 @@ my %langs=('.automatic' => 'Automatic');
 my %countries=('.automatic' => 'Automatic');
 my $lang_menu_variable;
 my $country_menu_variable;
-my $env_locale;
+my $env_locale;  # restore value for setlocale()
 $env_locale=setlocale(&POSIX::LC_ALL) if defined &POSIX::setlocale;
 $env_locale=$ENV{'LANG'} if (not defined $env_locale and defined $ENV{'LANG'});
+my $env_locale_lang;  # language for program messages
+$env_locale_lang=setlocale(&POSIX::LC_COLLATE) if defined &POSIX::setlocale;  # should be LC_MESSAGES (?)
+$env_locale_lang=$ENV{'LANG'} if (not defined $env_locale and defined $ENV{'LANG'});
+my %lc_lang_aliases;           # like (German => 'de', English => 'en');
+my %lc_country_aliases;        # like (Germany => 'DE', 'United Kingdom' => 'UK');
 ## ========================== Main Window ===========================
 my $main_widget;
 my %widgets;
@@ -99,7 +113,7 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub make_diagram( $$$$ );
  sub make_gui_graphwindow( $$ );
  sub make_gui_aboutwindow ();
- sub make_gui_statwindow ();
+ sub make_gui_statwindow( $ );
  sub make_gui_textwindow( $$ );
  sub make_gui_mainwindow ();
  sub main_window_iconify ();
@@ -110,6 +124,8 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub rcfg_update_matrix( $$ );
  sub rcfg_make_matrix( $ );
  sub rcfg_parse_matrix( $ );
+ sub rcfg_empty( $ );
+ sub rcfg_insert_row( $$$ );
  sub pcfg_start_rcfg( $$ );
  sub pcfg_update_gadgets( $$ );
  sub pcfg_editor_window( $$ );
@@ -217,23 +233,30 @@ sub update_gui_money_per_minute ( $ ) {
     my ($curr_time)=@_;
     my @tem;
     while (my ($isp, $wid) = each (%widgets)) {
-      $tem[$#tem+1]=Dialup_Cost::calc_price (dm::get_isp_tarif($isp), $curr_time, 60);
+      eval {
+	$tem[$#tem+1]=Dialup_Cost::calc_price (dm::get_isp_tarif($isp), $curr_time, 60);
+      }
     }
     @tem = sort {$a <=> $b} @tem;
     my $cheapest = $tem[$[];
     my $most_expensive = $tem[$#tem];
 
     while (my ($isp, $wid) = each (%widgets)) {
-	my $widget=$$wid[$offs_money_per_minute_widget];
-	my $price=Dialup_Cost::calc_price (dm::get_isp_tarif($isp), $curr_time, 60);
-	$widget->delete ('1.0', 'end');
-
-	$widget->insert('1.0', sprintf ("%.2f", $price));
-	my $bg_color = (($cheapest == $price) ? 'LightGreen'
-			: (($most_expensive == $price) ? 'Salmon'
-#			   : 'LightYellow'));
-			   : $color_entry_bg));
-	$widget->configure (-background => $bg_color);
+      my $widget=$$wid[$offs_money_per_minute_widget];
+      $widget->delete ('1.0', 'end');
+	eval {
+	  my $price=Dialup_Cost::calc_price (dm::get_isp_tarif($isp), $curr_time, 60);
+	  $widget->insert('1.0', sprintf ("%.2f", $price));
+	  my $bg_color = (($cheapest == $price) ? 'LightGreen'
+			  : (($most_expensive == $price) ? 'Salmon'
+			     #			   : 'LightYellow'));
+			     : $color_entry_bg));
+	  $widget->configure (-bg => $bg_color, -fg => 'black');
+	};
+      if ($@) {
+	$widget->configure (-bg => 'black', -fg => 'yellow');
+	$widget->insert('1.0', 'Error');
+      }
     }
 }
 
@@ -284,171 +307,190 @@ sub update_gui () {
 
 ## display time/money graphs
 sub make_diagram( $$$$ ) {
-    my ($win, $canvas, $xmax, $ymax) = @_;
-    my ($width, $height) = ($canvas->width - 60, $canvas->height - 60);
-    my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
-    my ($xoffs, $yoffs) = (30, -30);
+  my ($win, $canvas, $xmax, $ymax) = @_;
+  my ($width, $height) = ($canvas->width - 60, $canvas->height - 60);
+  my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
+  my ($xoffs, $yoffs) = (30, -30);
 
-    $canvas->delete($canvas->find('all'));
+  $canvas->delete($canvas->find('all'));
 
-    # print vertical diagram lines and numbers
-    for (my $i=0; $i <= $xmax; $i+=60) {
-	my $x = $i * $xscale + $xoffs;
-	$canvas->createLine($x, -$yoffs, $x, -$yoffs + $height,
-			    -fill => ($i%300) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
-	if (($i%300) == 0) {
-	    $canvas->createText($x, $height - $yoffs + 10,
-				-text => sprintf ("%u",  $i / 60));
-	}
+  # print vertical diagram lines and numbers
+  for (my $i=0; $i <= $xmax; $i+=60) {
+    my $x = $i * $xscale + $xoffs;
+    $canvas->createLine($x, -$yoffs, $x, -$yoffs + $height,
+			-fill => ($i%300) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
+    if (($i%300) == 0) {
+      $canvas->createText($x, $height - $yoffs + 10,
+			  -text => sprintf ("%u",  $i / 60));
     }
+  }
 
-    # print horizontal diagram lines and numbers
-    for (my $i=0; $i <= $ymax; $i+=10) {
-	my $y = -($i * $yscale + $yoffs - $height);
-	$canvas->createLine($xoffs, $y, $width + $xoffs,  $y,
-			    -fill => ($i%50) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
-	if (($i%50) == 0) {
-	  $y=sprintf("%.0f", $y); # canvas->createText is buggy when using a locale with "," as decimal point
-	  $canvas->createText(10, $y, -text => sprintf ("%0.1f", $i / 100));
-	}
+  # print horizontal diagram lines and numbers
+  for (my $i=0; $i <= $ymax; $i+=10) {
+    my $y = -($i * $yscale + $yoffs - $height);
+    $canvas->createLine($xoffs, $y, $width + $xoffs,  $y,
+			-fill => ($i%50) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
+    if (($i%50) == 0) {
+      $y=sprintf("%.0f", $y);	# canvas->createText is buggy when using a locale with "," as decimal point
+      $canvas->createText(10, $y, -text => sprintf ("%0.1f", $i / 100));
     }
+  }
 
-    # print labels in matching color
-    if (1) {
-	my $y=40;
-	foreach my $isp (@dm::isps) {
-	    next unless (dm::get_isp_flag_active ($isp));
+  # print labels in matching color
+  if (1) {
+    my $y=40;
+    foreach my $isp (@dm::isps) {
+      next unless (dm::get_isp_flag_active ($isp));
 
-	    $canvas->createText(40, $y,
-				-text => dm::get_isp_label($isp),
-				-anchor => 'w',
-				-fill => dm::get_isp_color($isp));
-	    $y+=13;
-	}
+      $canvas->createText(40, $y,
+			  -text => dm::get_isp_label($isp),
+			  -anchor => 'w',
+			  -fill => dm::get_isp_color($isp));
+      $y+=13;
     }
+  }
 
-    # print graphs in matching color
-    foreach my $isp (reverse (@dm::isps)) {
-	next unless (dm::get_isp_flag_active ($isp));
-	my $time=dm::db_time();
-	my $restart_x=0; 
-	my $restart_y=0;
-	my $part_of_previous_rate=0;
-      restart: {
-	  my $restart_x1=$restart_x;
-	  my $restart_y1=$restart_y;
-	  $restart_x = 0; $restart_y = 0;
-	  my $flag_do_restart=0;
-	  my @graphs=();
-	  my @args=();
-	  my @tmp =Dialup_Cost::tarif (dm::get_isp_tarif($isp), $time + $restart_x1);
-	  my $tar = $tmp[0];   # rate list
-	  my $swp = $tmp[2];   # absolute switchpoints (time of changing rates)
-	  my ($x, $y) = (0, 0);
-	  my $is_linear=1;
-	  my @data=();
-	  my $next_switch=9999999999;
-	  foreach my $a (@$tar) {
-	      my $offs_time = $$a[$Dialup_Cost::offs_sw_start_time] * dm::get_ppp_offset_avg($isp);
-	      my $offs_units; { use integer;  $offs_units =  $offs_time / $$a[$Dialup_Cost::offs_secs_per_clock] + 1};
-	      my $sum += $offs_units * $$a[$Dialup_Cost::offs_pfg_per_clock] + $$a[$Dialup_Cost::offs_pfg_per_connection];
-	      foreach my $i (@$swp) {
-		  $next_switch = $i if ($next_switch > $i);
+  # print graphs in matching color
+  foreach my $isp (reverse (@dm::isps)) {
+    next unless (dm::get_isp_flag_active ($isp));
+    eval {
+      my $time=dm::db_time();
+      my $restart_x=0; 
+      my $restart_y=0;
+      my $part_of_previous_rate=0;
+    restart: {
+	my $restart_x1=$restart_x;
+	my $restart_y1=$restart_y;
+	$restart_x = 0; $restart_y = 0;
+	my $flag_do_restart=0;
+	my @graphs=();
+	my @args=();
+	my @tmp = Dialup_Cost::tarif (dm::get_isp_tarif($isp), $time + $restart_x1);
+	my $tar = $tmp[0];	# rate list
+	my $swp = $tmp[2];	# absolute switchpoints (time of changing rates)
+	my ($x, $y) = (0, 0);
+	my $is_linear=1;
+	my @data=();
+	my $next_switch=9999999999;
+	foreach my $a (@$tar) {
+	  my $offs_time = $$a[$Dialup_Cost::offs_sw_start_time] * dm::get_ppp_offset_avg($isp);
+	  my $offs_units; { use integer;  $offs_units =  $offs_time / $$a[$Dialup_Cost::offs_secs_per_clock] + 1};
+	  my $sum += $offs_units * $$a[$Dialup_Cost::offs_pfg_per_clock] + $$a[$Dialup_Cost::offs_pfg_per_connection];
+	  foreach my $i (@$swp) {
+	    $next_switch = $i if ($next_switch > $i);
+	  }
+	  if ($$a[$Dialup_Cost::offs_secs_per_clock] <= 1) {
+	    # handle pseudo linear graphs (like 1 second per clock) ###############################
+	    my $xmax2 =  $xmax;
+	    if ($next_switch < $xmax) {
+	      $restart_x = $xmax2 = $next_switch;
+	      die if $restart_x < $restart_x1;
+	      $flag_do_restart=1;
+	    }
+	    if (! $restart_x1) {
+	      $graphs[$#graphs+1]
+		= [ 0, $sum,
+		    $xmax2, $sum + $xmax2 *  $$a[$Dialup_Cost::offs_pfg_per_clock] / $$a[$Dialup_Cost::offs_secs_per_clock] ];
+	    } else {
+	      $graphs[$#graphs+1]
+		= [ $restart_x1, 0,
+		    $xmax2, ($xmax2 - $restart_x1) *  $$a[$Dialup_Cost::offs_pfg_per_clock] / $$a[$Dialup_Cost::offs_secs_per_clock] ];
+	    }
+
+	  } else {
+	    # handle stair graphs (like 150 seconds per clock) ######################################
+	    my @g = ($restart_x1) ? ()              : (0, $sum);
+	    my $u = ($restart_x1) ? 0               : $offs_units+1;
+	    my $i = ($restart_x1) ? $restart_x1 + 1 : $$a[$Dialup_Cost::offs_secs_per_clock]  - $offs_time;
+
+	    while (($i <= $xmax) or ($i - $restart_x1 > $next_switch)) { # FIXME
+	      if ($i - $restart_x1 > $next_switch) { # switchpoint reached
+		$restart_x = $next_switch;
+		$flag_do_restart = 1;
+		$part_of_previous_rate 
+		  = (($next_switch - ($i - $restart_x1 -  $$a[$Dialup_Cost::offs_secs_per_clock]))
+		    ) / $$a[$Dialup_Cost::offs_secs_per_clock];
+		last;
 	      }
-	      if ($$a[$Dialup_Cost::offs_secs_per_clock] <= 1) {
-		  # handle pseudo linear graphs (like 1 second per clock) ###############################
-		  my $xmax2 =  $xmax;
-		  if ($next_switch < $xmax) {
-		       $restart_x = $xmax2 = $next_switch;
-		      die if $restart_x < $restart_x1;
-		      $flag_do_restart=1;
-		  }
-		  if (! $restart_x1) {
-		      $graphs[$#graphs+1]
-			  = [ 0, $sum,
-			      $xmax2, $sum + $xmax2 *  $$a[$Dialup_Cost::offs_pfg_per_clock] / $$a[$Dialup_Cost::offs_secs_per_clock] ];
-		  } else {
-		      $graphs[$#graphs+1]
-			  = [ $restart_x1, 0,
-			      $xmax2, ($xmax2 - $restart_x1) *  $$a[$Dialup_Cost::offs_pfg_per_clock] / $$a[$Dialup_Cost::offs_secs_per_clock] ];
-		  }
+	      $g[$#g+1] = $i-1;
+	      $g[$#g+1] = $#g > 1 ? $g[$#g-1] : 0;
+	      $g[$#g+1] = $i;
+	      $g[$#g+1] = $u++ * $$a[$Dialup_Cost::offs_pfg_per_clock];
 
-	      } else {
-		  # handle stair graphs (like 150 seconds per clock) ######################################
-		  my @g = ($restart_x1) ? ()              : (0, $sum);
-		  my $u = ($restart_x1) ? 0               : $offs_units+1;
-		  my $i = ($restart_x1) ? $restart_x1 + 1 : $$a[$Dialup_Cost::offs_secs_per_clock]  - $offs_time;
-
-		  while (($i <= $xmax) or ($i - $restart_x1 > $next_switch)) { # FIXME
-		      if ($i - $restart_x1 > $next_switch) { # switchpoint reached
-			  $restart_x = $next_switch;
-			  $flag_do_restart = 1;
-			  $part_of_previous_rate 
-			      = (($next_switch - ($i - $restart_x1 -  $$a[$Dialup_Cost::offs_secs_per_clock]))
-				 ) / $$a[$Dialup_Cost::offs_secs_per_clock];
-			  last;
-		      }
-		      $g[$#g+1] = $i-1;
-		      $g[$#g+1] = $#g > 1 ? $g[$#g-1] : 0;
-		      $g[$#g+1] = $i;
-		      $g[$#g+1] = $u++ * $$a[$Dialup_Cost::offs_pfg_per_clock];
-
-		      $i+= $$a[$Dialup_Cost::offs_secs_per_clock] * (1 - $part_of_previous_rate);
-		      $part_of_previous_rate = 0;
-		  }
-		  if (! $flag_do_restart) {
-		      if ($i != $xmax) {
-			  $g[$#g+1] = $xmax;
-			  $g[$#g+1] = $g[$#g-1];
-		      }
-		  } else {
-		      # we need common last x  for add_graph()
-		      $g[$#g+1] = $next_switch;
-		      $g[$#g+1] = $g[$#g-1];
-		  }
-		  $graphs[$#graphs+1] = \ @g;
+	      $i+= $$a[$Dialup_Cost::offs_secs_per_clock] * (1 - $part_of_previous_rate);
+	      $part_of_previous_rate = 0;
+	    }
+	    if (! $flag_do_restart) {
+	      if ($i != $xmax) {
+		$g[$#g+1] = $xmax;
+		$g[$#g+1] = $g[$#g-1];
 	      }
+	    } else {
+	      # we need common last x  for add_graph()
+	      $g[$#g+1] = $next_switch;
+	      $g[$#g+1] = $g[$#g-1];
+	    }
+	    $graphs[$#graphs+1] = \ @g;
 	  }
-	  my $gref =  $graphs[0];
-	  my @graph = @$gref;
-	  if ($#graphs > 0) {
-	      for (my $i=1; $i <= $#graphs; $i++) {
-		  @graph = add_graphs ($gref, $graphs[$i]);
-	      }
+	}
+	my $gref =  $graphs[0];
+	my @graph = @$gref;
+	if ($#graphs > 0) {
+	  for (my $i=1; $i <= $#graphs; $i++) {
+	    @graph = add_graphs ($gref, $graphs[$i]);
 	  }
-	  for (my $i=1; $i <= $#graph; $i+=2) {
-	      $graph[$i] += $restart_y1;
+	}
+	for (my $i=1; $i <= $#graph; $i+=2) {
+	  $graph[$i] += $restart_y1;
+	}
+	{
+	  my $t=0;
+	  foreach my $i (@graph) {
+	    if (++$t%2) {
+	      $args[$#args+1] = $i * $xscale + $xoffs;
+	    } else {
+	      # y
+	      $args[$#args+1] = -($i * $yscale - $height + $yoffs);
+	    }
 	  }
-	  {
-	      my $t=0;
-	      foreach my $i (@graph) {
-		  if (++$t%2) {
-		      $args[$#args+1] = $i * $xscale + $xoffs;
-		  } else {
-		      # y
-		      $args[$#args+1] = -($i * $yscale - $height + $yoffs);
-		  }
-	      }
-	  }
+	}
 
-	  $args[$#args+1] = '-fill';
-	  $args[$#args+1] = dm::get_isp_color($isp);
-	  $canvas->createLine (@args);
+	$args[$#args+1] = '-fill';
+	$args[$#args+1] = dm::get_isp_color($isp);
+	$canvas->createLine (@args);
 
-	  if ($flag_do_restart) {
-	      $restart_y = $graph[$#graph];
-	      goto restart if $flag_do_restart;
-	  }
+	if ($flag_do_restart) {
+	  $restart_y = $graph[$#graph];
+	  goto restart if $flag_do_restart;
+	}
       }
-    }
+    };
+  }
 }
 
 sub make_gui_graphwindow( $$ ) {
     my ($xmax, $ymax) = @_; #(30 * $secs_per_min, 200);
+
+    unless ($ymax) {
+      my $max_cost=1;
+      my $curr_time=dm::db_time();
+      foreach my $isp (@dm::isps) {
+	next unless (dm::get_isp_flag_active ($isp));
+	eval {
+	  my $cost = dm::predict_cost ($isp, $curr_time, $xmax);
+	  $max_cost = $cost if ($cost > $max_cost);
+	};
+      }
+      while ($ymax < $max_cost) {
+	$ymax+=50;
+      }
+    }
+
     my ($width, $height) = (500, 350);
     my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
     my ($xoffs, $yoffs) = (20, -20);
     my $win=$main_widget->Toplevel;
+    $win->focus(); # w32 workaround (?)
     $win->title("$APPNAME: Graph");
     my $canvas=$win->Canvas(-width => $width + 40, -height => $height + 40, -background => $cfg_gui{'graph_bgcolor'});
     $canvas->pack(-expand => 1, -fill => 'both');
@@ -490,8 +532,8 @@ sub make_gui_aboutwindow () {
 }
 
 ## display money and time statisctics from user owned logfile
-sub make_gui_statwindow () {
-  make_gui_textwindow_arr(log_stat::do_work("$dm::cost_out_file", 7, 6, $LOC{'lc_currency_symbol'}),
+sub make_gui_statwindow( $ ) {
+  make_gui_textwindow_arr(log_stat::do_work("$dm::cost_out_file", 7, 6, $LOC{'lc_currency_symbol'}, shift),
 			  "$APPNAME: Stat");
 }
 
@@ -578,19 +620,39 @@ sub make_gui_mainwindow () {
     $file_menu->command (-label => $LOC{'menu_file_quit'}, -command => sub { dm::disconnect () ; exit });
 
     $edit_menu->command (-label => $LOC{'menu_edit_peer_options'}, -command => sub { pcfg_editor_window (100,200) });
-    $edit_menu->command (-label => $LOC{'menu_edit_graph_options'}, -command => sub { color_cfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu_edit_gui_options'}, -command => sub { color_cfg_editor_window (100,200) });
     $edit_menu->command (-label => $LOC{'menu_edit_rate_options'}, -command => sub { rcfg_editor_window (100,200) });
     $edit_menu->command (-label => $LOC{'menu_edit_socket_options'}, -command => sub { sock_cfg_editor_window (100,200) });
 
 
 ##--- View Menu
-    $view_menu->command (-label => "$LOC{'menu_view_graph'} 5 min ...", -command => sub {make_gui_graphwindow(5 * $secs_per_min, 50) });
-    $view_menu->command (-label => "$LOC{'menu_view_graph'} 15 min ...", -command => sub {make_gui_graphwindow(15 * $secs_per_min, 100) });
-    $view_menu->command (-label => "$LOC{'menu_view_graph'} 30 min ...", -command => sub {make_gui_graphwindow(30 * $secs_per_min, 200) });
-    $view_menu->command (-label => "$LOC{'menu_view_graph'} 1 h ...", -command => sub {make_gui_graphwindow(1 * $secs_per_hour, 400) });
-#    $view_menu->command (-label => "$LOC{'menu_view_graph'} 2 h ...", -command => sub {make_gui_graphwindow(2 * $secs_per_hour, 800) });
+    $view_menu->command (-label => "$LOC{'menu_view_graph'} 5 min ...", -command => sub {make_gui_graphwindow(5 * $secs_per_min, 0) });
+    $view_menu->command (-label => "$LOC{'menu_view_graph'} 15 min ...", -command => sub {make_gui_graphwindow(15 * $secs_per_min, 0) });
+    $view_menu->command (-label => "$LOC{'menu_view_graph'} 30 min ...", -command => sub {make_gui_graphwindow(30 * $secs_per_min, 0) });
+    $view_menu->command (-label => "$LOC{'menu_view_graph'} 1 h ...", -command => sub {make_gui_graphwindow(1 * $secs_per_hour, 0) });
+#    $view_menu->command (-label => "$LOC{'menu_view_graph'} 2 h ...", -command => sub {make_gui_graphwindow(2 * $secs_per_hour, 0) });
     $view_menu->add ('separator');
-    $view_menu->command (-label => $LOC{'menu_view_stat'}, -command => sub {make_gui_statwindow() });
+    # Statistics
+
+    $view_menu->command (-label => $LOC{'menu_view_stat'}, -command => sub {make_gui_statwindow(0) });
+    {
+      $view_menu->command 
+	(-label => $LOC{'menu_view_stat_filt'},
+	 -command => sub
+	 {
+	   require Tk::DialogBox;
+	   my $dialog = $main_widget->DialogBox(-title => "tkdialup: Filter", -buttons => ["OK", "Cancel"]);
+	   #	$dialog->add(Widget, args);
+	   $dialog->add('Label', -text => "Choose ISP name:")->pack();
+	   my $optmenu = $dialog->add('Optionmenu')->pack();
+	   my $optmenu_variable;
+	   $optmenu->configure(-options => \@dm::isps, -variable => \$optmenu_variable);
+	   if ($dialog->Show() eq 'OK') {
+	     make_gui_statwindow ( { peer => $optmenu_variable } );
+	   }
+	 });
+    }
+    ###
     $view_menu->add ('separator');
     $view_menu->add ('checkbutton', -label => $LOC{'menu_view_clock'},
 		     -variable => \$cfg_gui{'show_rtc'},
@@ -666,7 +728,7 @@ sub make_gui_mainwindow () {
     $balloon->attach($edit_menu,
 		     -msg => ['',
 			      $LOC{'menu_edit_peer_options.help'},
-			      $LOC{'menu_edit_graph_options.help'},
+			      $LOC{'menu_edit_gui_options.help'},
 			      $LOC{'menu_edit_rate_options.help'},
 			      $LOC{'menu_edit_options.help'},
 			      $LOC{'menu_edit_socket_options.help'},
@@ -680,6 +742,7 @@ sub make_gui_mainwindow () {
 			      $LOC{'menu_view_graph.help'},
 			      '',
 			      $LOC{'menu_view_stat.help'},
+			      $LOC{'menu_view_stat_filt.help'},
 			      '',
 			      $LOC{'menu_view_clock.help'},
 			      $LOC{'menu_view_progress_bar.help'},
@@ -730,7 +793,7 @@ sub make_gui_mainwindow () {
 	foreach my $isp (@dm::isps) {
 	    next unless (dm::get_isp_flag_active ($isp));
 	    my $frame = $usepack ? $button_frame->Frame : $button_frame;
-		
+
 	    my $cmd_button = $frame->Button(-text => dm::get_isp_label ($isp),
 				       -command => sub{ dm::dialup ($isp) } );
 	    my $money_counter = $frame->ROText(-height => 1, -width => 10, -takefocus => 0, -insertofftime => 0);
@@ -855,11 +918,11 @@ sub mask_widget( $$$$$$$$ ) {
 	$balloon->attach($label, -balloonmsg => $$help[$i]) if ($help and $balloon);
 
 	if ($$types[$i] eq 'text') {
-	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1);
+	    my $entry = $mask_frame->Entry(-width => length($val)+5)->grid(-row => $row, -column => 1, -sticky => "ew");
 	    $entry->insert(0, $val);
 	    $$widgets[$i] = $entry;
 	} elsif ($$types[$i] eq 'optmenu') {
-	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1);
+	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1, -sticky => "ew");
 	    $entry->insert(0, $val);
 	    $$widgets[$i] = $entry;
 
@@ -877,7 +940,7 @@ sub mask_widget( $$$$$$$$ ) {
 	    my $label = $mask_frame->Label(-text => "$val")->grid(-row => $row, -column => 1, -sticky => "w");
 	    $$widgets[$i] = $label;
 	} elsif ($$types[$i] eq 'color') {
-	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1);
+	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1, -sticky => "ew");
 	    set_color_entry ($entry, $val);
 
 	    $entry->insert(0, $val);
@@ -1150,49 +1213,61 @@ sub rcfg_matrix_insert_row ( $$ ) {
 }
 sub rcfg_matrix_delete_row ( $$ ) {
   my ($matrix, $index) = @_;
+  db_trace ("rcfg_matrix_delete_row index=$index");
   foreach my $i ($index..$#$matrix-1) {
+    db_trace ("$i<---");
     $$matrix[$i]=$$matrix[$i+1];
   }
-  --$#$matrix;
+  --$#$matrix if ($index <= $#$matrix);
+}
+
+sub rcfg_empty( $ ) {
+  my $widgets=shift;
+  my $wids=$$widgets[0];
+  my $wid=$$wids[0];
+  $wid->cget('-state') eq 'disabled';
 }
 
 sub rcfg_insert_row( $$$ ) {
   my ($matrix, $widgets, $index) = @_;
   my $start_matrix=3;
-  rcfg_matrix_insert_row ($matrix, $index + $start_matrix);
-  my $labels=$$matrix[0];
-  my $fmts=$$matrix[1];
-  my $rows = scalar @$matrix - $start_matrix;
-  my $cols = scalar @$labels;
-  ## make table columns
-  for (my $c=0; $c < $cols; $c++) {
-    my $wids=$$widgets[$c];
-    db_trace("insert_row \$index=$index \$#\$wids=$#$wids");
-    # make column cells
-    foreach my $wr (reverse($index..$#$wids-1)) {
-#      my $mr=$wr + $start_matrix;
-      my $src_wid=$$wids[$wr];
-      my $tgt_wid=$$wids[$wr+1];
-      next if ($src_wid->cget('-state') eq 'disabled');
-      $tgt_wid->configure(-state => 'normal');
-      if ($$fmts[$c] =~ /^cstring:(\d+)/) {
-	$tgt_wid->delete ('0', 'end');
-	$tgt_wid->insert ('0', $src_wid->get);
-	$src_wid->delete ('0', 'end');
-      } elsif (($$fmts[$c] =~ /^checkbox$/)) {
-	if ($src_wid->{'Value'}) {
-	  $tgt_wid->select;
-	} else {
-	  $tgt_wid->deselect;
+
+  if (not rcfg_empty ($widgets)) {
+    rcfg_matrix_insert_row ($matrix, $index + $start_matrix);
+    my $labels=$$matrix[0];
+    my $fmts=$$matrix[1];
+    my $rows = scalar @$matrix - $start_matrix;
+    my $cols = scalar @$labels;
+    ## make table columns
+    for (my $c=0; $c < $cols; $c++) {
+      my $wids=$$widgets[$c];
+      db_trace("insert_row \$index=$index \$#\$wids=$#$wids");
+      # make column cells
+      foreach my $wr (reverse($index..$#$wids-1)) {
+	#      my $mr=$wr + $start_matrix;
+	my $src_wid=$$wids[$wr];
+	my $tgt_wid=$$wids[$wr+1];
+	next if ($src_wid->cget('-state') eq 'disabled');
+	$tgt_wid->configure(-state => 'normal');
+	if ($$fmts[$c] =~ /^cstring:(\d+)/) {
+	  $tgt_wid->delete ('0', 'end');
+	  $tgt_wid->insert ('0', $src_wid->get);
+	  $src_wid->delete ('0', 'end');
+	} elsif (($$fmts[$c] =~ /^checkbox$/)) {
+	  if ($src_wid->{'Value'}) {
+	    $tgt_wid->select;
+	  } else {
+	    $tgt_wid->deselect;
+	  }
+	  $src_wid->deselect;
 	}
-	$src_wid->deselect;
       }
     }
+    # adjust focus
+    my $wids = $$widgets[$rcfg_current_col=0];
+    my $wid=$$wids[$rcfg_current_row=$index];
+    $wid->focus;
   }
-  # adjust focus
-  my $wids = $$widgets[$rcfg_current_col=0];
-  my $wid=$$wids[$rcfg_current_row=$index];
-  $wid->focus;
 }
 
 sub rcfg_append_row( $$ ) {
@@ -1220,50 +1295,59 @@ sub rcfg_append_row( $$ ) {
 sub rcfg_delete_row( $$$ ) {
   my ($matrix, $widgets, $index) = @_;
   my $start_matrix=3;
-  rcfg_matrix_delete_row ($matrix, $index + $start_matrix);
-  my $labels=$$matrix[0];
-  my $fmts=$$matrix[1];
-  my $rows = scalar @$matrix - $start_matrix;
-  my $cols = scalar @$labels;
-  ## make table columns
-  for (my $c=0; $c < $cols; $c++) {
-    my $wids=$$widgets[$c];
-    db_trace("insert_row \$index=$index \$#\$wids=$#$wids");
-    # make column cells
-    foreach my $wr ($index..$#$wids-1) {
-#      my $mr=$wr + $start_matrix;
-      my $src_wid=$$wids[$wr+1];
-      my $tgt_wid=$$wids[$wr];
-      $tgt_wid->configure(-state => 'disabled') if ($src_wid->cget('-state') eq 'disabled');
-      if ($$fmts[$c] =~ /^cstring:(\d+)/) {
-	$tgt_wid->delete ('0', 'end');
-	$tgt_wid->insert ('0', $src_wid->get);
-	$src_wid->delete ('0', 'end');
-      } elsif (($$fmts[$c] =~ /^checkbox$/)) {
-	if ($src_wid->{'Value'}) {
-	  $tgt_wid->select;
-	} else {
-	  $tgt_wid->deselect;
+  if (not rcfg_empty ($widgets)) {
+    rcfg_matrix_delete_row ($matrix, $index + $start_matrix);
+    my $labels=$$matrix[0];
+    my $fmts=$$matrix[1];
+    my $rows = scalar @$matrix - $start_matrix;
+    my $cols = scalar @$labels;
+    ## visit table columns
+    for (my $c=0; $c < $cols; $c++) {
+      my $wids=$$widgets[$c];
+      db_trace("remove_row \$index=$index \$#\$wids=$#$wids");
+      # shift column cells
+      foreach my $wr ($index..$#$wids-1) {
+	#      my $mr=$wr + $start_matrix;
+	my $src_wid=$$wids[$wr+1];
+	my $tgt_wid=$$wids[$wr];
+
+	if ($$fmts[$c] =~ /^cstring:(\d+)/) {
+	  $tgt_wid->delete ('0', 'end');
+	  $tgt_wid->insert ('0', $src_wid->get);
+	  $src_wid->delete ('0', 'end');
+	} elsif (($$fmts[$c] =~ /^checkbox$/)) {
+	  if ($src_wid->{'Value'}) {
+	    $tgt_wid->select;
+	  } else {
+	    $tgt_wid->deselect;
+	  }
+	  $src_wid->deselect;
 	}
-	$src_wid->deselect;
+	if ($src_wid->cget('-state') eq 'disabled'
+	    and $tgt_wid->cget('-state') ne 'disabled') {
+	  $tgt_wid->configure(-state => 'disabled')
+	}
       }
     }
-  }
-  # adjust focus
-  for (;$rcfg_current_row; --$rcfg_current_row) {
-    my $wids = $$widgets[$rcfg_current_col];
-    my $wid=$$wids[$rcfg_current_row];
-    if ($wid->cget('-state') ne 'disabled') {
-      $wid->focus;
-      last;
+    # adjust focus
+    for (;$rcfg_current_row; --$rcfg_current_row) {
+      my $wids = $$widgets[$rcfg_current_col];
+      my $wid=$$wids[$rcfg_current_row];
+      if ($wid->cget('-state') ne 'disabled') {
+	$wid->focus;
+	last;
+      }
     }
   }
 }
 
 # make a number from a string which may be in LC_NUMERIC format
+# return 0 for empty strings
 sub make_number( $ ) {
   my $s=shift;
-  my $dp=substr(sprintf("%1.1f", 1.1), 1, 1);
+  return 0 if $s =~ /^\s*$/;
+  my $dp='\\' . substr(sprintf("%1.1f", 1.1), 1);
+  chop $dp;
   $s =~ s/$dp/./;
   $s * 1;
 }
@@ -1287,8 +1371,8 @@ sub rcfg_parse_matrix( $ ) {
 	if ($$r[2] ne "") {
 	    my $str = $$r[2];
 	    my @wdays;
-	    while ($str =~ /([0-6])/g) {
-		$wdays[$#wdays+1]= $1 * 1;
+	    while ($str =~ /([0-6HW])/g) {
+		$wdays[$#wdays+1]= $1;
 	    }
 	    db_trace ("wdays: @wdays");
 	    $res_cond[1] = \@wdays;
@@ -1320,8 +1404,10 @@ sub rcfg_parse_matrix( $ ) {
 sub pcfg_start_rcfg_new( $ ) {
     my ($rate_name) = @_;
     my $win = $main_widget->Toplevel;
+    $win->focus(); # w32 workaround (?)
     my $balloon = $cfg_gui{'balloon_help'} ? $win->Balloon() : 0;
     $win->title("$APPNAME: cost for rate <$rate_name>");
+    $win->resizable (0, 0);
     undef @rcfg_widgets;
     rcfg_make_window ($win, $rate_name, rcfg_make_matrix ($rate_name), \@rcfg_widgets, $balloon)->pack();
 }
@@ -1354,8 +1440,10 @@ sub pcfg_update_gadgets( $$ ) {
 sub pcfg_editor_window( $$ ) {
     my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
     my $win=$main_widget->Toplevel;
+    $win->focus(); # w32 workaround (?)
     $win->title("$APPNAME: Config");
-    my $balloon = $cfg_gui{'balloon_help'} ? $win->Balloon() : 0;
+    $win->resizable (0, 0);
+    my $balloon = $cfg_gui{'balloon_help'} ? $win->Balloon() : undef;
     my $frame1 = $win->Frame;
     my $box = $frame1->Listbox(-relief => 'sunken',
 			       -width => -1, # Shrink to fit
@@ -1408,7 +1496,10 @@ sub pcfg_editor_window( $$ ) {
 	       $box->see('end');
 	       $box->selectionSet('end');
 
-	       my @config_values=("$isp","pon $isp","poff $isp","$isp","Black","FLAT", "1");
+	       my @config_values=("$isp",
+				  "$cfg_gui{'peer_default_up_cmd'} $isp",
+				  "$cfg_gui{'peer_default_down_cmd'} $isp",
+				  "$isp","Black","FLAT", "1");
 	       $cfg__isp_cfg_cache[$#cfg__isp_cfg_cache+1]=\@config_values;
 	       $dm::isps[$#dm::isps+1]=$isp;
 	       dm::set_isp_cfg (\@config_values);
@@ -1422,8 +1513,8 @@ sub pcfg_editor_window( $$ ) {
 				 if ($cc) {
 				     $cc=0;
 				     $app_has_restarted=1;
-				     $win->destroy;
 				     $balloon->destroy if defined $balloon; # bug workaround?
+				     $win->destroy;
 				     $main_widget->destroy;
 				 } else { $win->destroy }};
 
@@ -1496,7 +1587,9 @@ sub pcfg_editor_window( $$ ) {
 sub sock_cfg_editor_window( $$ ) {
   my ($xmax, $ymax) = @_;
   my $win=$main_widget->Toplevel;
+  $win->focus(); # w32 workaround (?)
   $win->title("$APPNAME: Sockets");
+  $win->resizable (0, 0);
   my $cfg = \%dm::cfg_sock;
   my $cfg_default=$$cfg{'.config_default'};
 
@@ -1560,14 +1653,49 @@ sub sock_cfg_editor_window( $$ ) {
 sub color_cfg_editor_window( $$ ) {
     my ($xmax, $ymax) = @_;
     my $win=$main_widget->Toplevel;
-    $win->title("$APPNAME: Graph Colors");
+    $win->focus(); # w32 workaround (?)
+    my $balloon=$main_widget->Balloon();
+    $win->title("$APPNAME: GUI Settings");
+    $win->resizable (0, 0);
     my $cfg = \%cfg_gui;
     my $cfg_default=$$cfg{'.config_default'};
 
     my @widgets;
-    my @types = ('color', 'color', 'color');
-    my @keys = ('Background Color', 'Ruler Color', 'Ruler2 Color');
-    my @cfg_keys = ('graph_bgcolor', 'graph_nrcolor', 'graph_ercolor');
+    my @types = ('color', 'color', 'color', 'text');
+    my @keys = ('Graph Background Color', 'Graph Ruler Color', 'Graph Ruler Color 2', 'RTC Format (strftime(3))');
+    my @cfg_keys = ('graph_bgcolor', 'graph_nrcolor', 'graph_ercolor', 'rtc_strftime_fmt');
+    my @helps = ('Background color of graph window', 'Color for normal ruler', 'Color for hightlighted ruler',
+		 'Format string for Real-Time-Clock according to POSIX strftime() interface.
+----------------------------------------------
+%a     The  abbreviated  weekday  name
+%A     The  full  weekday  name
+%b     The abbreviated month
+%B     The  full  month  name
+%c     The preferred date and time representation for the current locale.
+%C     The century number (the year divided by 100 and truncated  to  an integer).
+%d     The  day of the month as a decimal number (range 01 to 31).
+%H     The  hour as a decimal number using a 24-hour clock (range 00 to 23).
+%I     The hour as a decimal number using a 12-hour  clock (range 01 to 12).
+%j     The  day of the year as a decimal number (range 001 to 366).
+%m     The month as a decimal number (range 01 to 12).
+%M     The minute as a decimal number (range 00 to 59).
+%p     Either `AM´ or `PM´ according  to  the  given  time value.
+%S     The second as a decimal number (range 00 to 61).
+%U     The week number of the current year  as  a  decimal
+       number,  range  00  to  53, starting with the first
+       Sunday as the first day of week 01. See also %V and
+       %W.
+%w     The  day  of  the  week as a decimal, range 0 to 6, Sunday being 0.  See also %u.
+%W     The week number of the current year  as  a  decimal
+       number,  range  00  to  53, starting with the first
+       Monday as the first day of week 01.
+%x     The preferred date representation for  the  current locale without the time.
+%X     The  preferred  time representation for the current locale without the date.
+%y     The year as a  decimal  number  without  a  century (range 00 to 99).
+%Y     The year as a decimal number including the century.
+%Z     The time zone or name or abbreviation.
+----------------------------------------------
+');
     my @vals;
     my @refs;
     my @defaults;
@@ -1580,11 +1708,14 @@ sub color_cfg_editor_window( $$ ) {
     }
     my $top = $win->Frame;
     my $mask_frame = $top->Frame;
-    mask_widget ($mask_frame, 0, \@widgets, \@types, \@keys, 0, 0, \@vals);
+    mask_widget ($mask_frame, 0, \@widgets, \@types, \@keys, \@helps, $balloon, \@vals);
     $mask_frame->pack(-expand => 1, -fill => 'both');
 
     my $frame1 = $top->Frame;
-    $frame1->Button(-text => $LOC{'common_button_cancel'}, -command => sub { $win->destroy(); })->pack(-side => 'left' );
+    $frame1->Button(-text => $LOC{'common_button_cancel'},
+		    -command => sub { $balloon->destroy if defined $balloon; # bug workaround?
+				      $win->destroy();
+				    })->pack(-side => 'left' );
     $frame1->Button(-text => $LOC{'common_button_apply'},
 		    -command => sub
 		    { foreach my $i (0...$#refs) {
@@ -1595,7 +1726,12 @@ sub color_cfg_editor_window( $$ ) {
 				set_color_entry ($widgets[$i], $widgets[$i]->get());
 			    }
 			}
-		    }
+		      }
+		      if (1) {
+			$app_has_restarted=1;
+			$balloon->destroy if defined $balloon; # bug workaround?
+			$main_widget->destroy;
+		      } else { $win->destroy() }
 		    })->pack(-side => 'right');
     $frame1->Button(-text => $LOC{'common_button_default'},
 		    -command => sub
@@ -1620,7 +1756,9 @@ sub color_cfg_editor_window( $$ ) {
 sub rcfg_editor_window( $$ ) {
     my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
     my $win=$main_widget->Toplevel;
+    $win->focus(); # w32 workaround (?)
     $win->title("$APPNAME: Rate Config");
+    $win->resizable (0, 0);
 
     # Rate Optionmenu
     my $frame1 = do {
@@ -1819,19 +1957,21 @@ sub read_locale( $$ ) {
   };
 
   if ($lang eq '.automatic'
-      and defined $env_locale
-      and $env_locale =~ m/^([a-z]+)/) {
-    $lang=$1;
+      and defined $env_locale_lang
+      and $env_locale_lang =~ m/^([^_]+)/) {
+    $lang= defined $lc_lang_aliases{$1} ? $lc_lang_aliases{$1} : $1;
   }
 
   if ($country eq '.automatic'
-      and defined $env_locale
-      and $env_locale =~ m/^[a-z]+_([A-Z]+)?/) {
-    $country=$1;
+      and defined $env_locale_lang
+      and $env_locale_lang =~ m/^[^_]+_([^.]+)\.?/) {
+    $country= defined $lc_country_aliases{$1} ? $lc_country_aliases{$1} : $1;
   }
 
   &$read_file ("$progdir/language-$lang");
   &$read_file ("$progdir/country-$country");
+  &$read_file ("$cfg_dir/language-$lang");
+  &$read_file ("$cfg_dir/country-$country");
 }
 
 sub init_locale () {
@@ -1845,6 +1985,9 @@ sub init_locale () {
  'lc_currency_symbol' => '$',
  'lc_decimal_point' => '.',
  'currency_cent' => 'Cent',
+ 'lc_lang_alias' => 'English',            # lang on MS-Windows
+ 'lc_country_alias' => 'United States',   # country on MS-Windows
+ 'country_holydays' => '',
 #---- File Menu
  'menu_file' => "File",
  'menu_file_hangup_now' => "Hangup now",
@@ -1864,8 +2007,8 @@ sub init_locale () {
 You can examine a rate but you cannot edit a rate yet.',
  'menu_edit_rate_options' => "Rate Options",
  'menu_edit_rate_options.help' => 'Config Editor to create, edit and delete rates',
- 'menu_edit_graph_options' => "Graph Options",
- 'menu_edit_graph_options.help' => 'Edit  background and ruler colors of graph window',
+ 'menu_edit_gui_options' => "GUI Options",
+ 'menu_edit_gui_options.help' => 'Customize GUI settings (colors, date-format)',
  'menu_edit_socket_options' => "Socket Options",
  'menu_edit_socket_options.help' => 'Edit parameters for communication  with dialer process.',
 #---- View Menu
@@ -1880,6 +2023,8 @@ You can examine a rate but you cannot edit a rate yet.',
  'menu_view_disconnect_button.help' => "Provide disconnect button",
  'menu_view_stat' => "Statistic ...",
  'menu_view_stat.help' => 'Show a time/money history list for this user',
+ 'menu_view_stat_filt' => "Statistic for ...",
+ 'menu_view_stat_filt.help' => 'Show a time/money history list for this user',
  'button_main_hangup' => "Hangup",
 #---- Help Menu
  'menu_help' => "Help",
@@ -1950,14 +2095,16 @@ $langs{'.builtin'} = "$LOC{'language_name'} (builtin)";
 $countries{'.builtin'} = "$LOC{'country_name'} (builtin)";
 
 # get external languages from "language-*" files
-while (<language-*>) {
-  if (m/^language-(\w+)$/) {
+while (<language-* $cfg_dir/language-*>) {
+  my $file=$_;
+  if (m/language-(\w+)$/) {
     my $id=$1;
-    if (open (IN, "language-$id")) {
+    if (open (IN, $file)) {
       while (<IN>) {
 	if (m/^language_name=(.+)$/) {
 	  $langs{$id}=$1;
-	  last;
+	} elsif (m/^lc_lang_alias=(.+)$/) {
+	  $lc_lang_aliases{$1}=$id;
 	}
       }
       close (IN);
@@ -1966,14 +2113,16 @@ while (<language-*>) {
 }
 
 # get external countries from "country-*" files
-while (<country-*>) {
-  if (m/^country-(\w+)$/) {
+while (<country-* $cfg_dir/country-*>) {
+  my $file=$_;
+  if (m/country-(\w+)$/) {
     my $id=$1;
-    if (open (IN, "country-$id")) {
+    if (open (IN, $file)) {
       while (<IN>) {
 	if (m/^country_name=(.+)$/) {
 	  $countries{$id}=$1;
-	  last;
+	} elsif (m/^lc_country_alias=(.+)$/) {
+	  $lc_country_aliases{$1}=$id;
 	}
       }
       close (IN);
@@ -1997,18 +2146,35 @@ sub cfg_locale {
 
 
   if (defined &POSIX::setlocale) {
-    unless ($cfg_gui{'lang'} eq '.automatic',
+    unless ($cfg_gui{'lang'} eq '.automatic'
+	    and $cfg_gui{'country'} eq '.automatic'
 	    and defined $env_locale,
 	    and POSIX::setlocale (&POSIX::LC_ALL, $env_locale)) {
       POSIX::setlocale (&POSIX::LC_ALL, "$LOC{'posix_lang'}_$LOC{'posix_country'}") or
-	  POSIX::setlocale (&POSIX::LC_ALL, "$LOC{'posix_lang'}") or
-	      POSIX::setlocale (&POSIX::LC_ALL, "C");
+	  POSIX::setlocale (&POSIX::LC_ALL, "$LOC{'posix_lang'}") or do {
+	    POSIX::setlocale (&POSIX::LC_ALL, "C");
+	    # MS-Windows
+	    while (my ($lang_alias, $lang) = each (%lc_lang_aliases)) {
+	      next if ($lang ne $LOC{'posix_lang'});
+	      while (my ($country_alias, $country) = each (%lc_country_aliases)) {
+		next if ($country ne $LOC{'posix_country'});
+		db_trace($lang_alias . '<===>' . $country_alias);
+		POSIX::setlocale (&POSIX::LC_ALL, $lang_alias . '_' . $country_alias);
+	      }
+	    }
+	  };
     }
+    # XXX-bw/24-Sep-00: LC_NUMERICs other than "C" may be broken an some systems
+    POSIX::setlocale (&POSIX::LC_NUMERIC, "C");
+  }
+  if (defined &POSIX::localeconv) {
     my ($decimal_point, $currency_symbol)
       = @{POSIX::localeconv()}{'decimal_point', 'currency_symbol'};
-    $LOC{'lc_currency_symbol'} = $currency_symbol;
-    $LOC{'lc_decimal_point'} = $decimal_point;
+    $LOC{'lc_currency_symbol'} = $currency_symbol if defined $currency_symbol;
+    $LOC{'lc_decimal_point'} = $decimal_point if defined $decimal_point;
+    db_trace("\$decimal_point $decimal_point");
   }
+  $Dialup_Cost::locale_holydays=$LOC{'country_holydays'};
 }
 
 @dm::commands_on_startup = ();
@@ -2021,6 +2187,8 @@ $dm::time_correction_offset = $ENV{"TKD_TIME_OFFSET"} if defined $ENV{"TKD_TIME_
 
 restore_config ();
 dm::init ();
+
+db_trace("--->$env_locale<---");
 
 #read_config_old((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file);
 # ???-bw/31-Aug-00 Is it allowed to restart Tk?

@@ -7,6 +7,14 @@
 #include <stdio.h>
 
 
+#if 0
+#define db_trace puts
+#define db_tracef(x) printf x
+#else
+#define db_trace(x)
+#define db_tracef(x)
+#endif
+
 #define USE_SOCKETS
 #define MULTIUSER
 
@@ -15,7 +23,7 @@ char cmd_chars[CMD_nmb];
 typedef int (*command) (void *arg);
 command cmd_hooks[CMD_nmb];
 
-enum { STATE_online, STATE_dialing, STATE_offline, STATE_startup, STATE_nmb};
+enum { STATE_startup, STATE_offline, STATE_dialing, STATE_online, STATE_nmb};
 int curr_state, prev_state;
 RASCONNSTATE rc_state;
 RASCONNSTATUS rc_status;
@@ -33,92 +41,8 @@ int peer_cnt;
 RASDIALPARAMS dial_params;
 HRASCONN ras_conn;
 
-
-/* =========================================== */
-int cmd_ignore (void *p);
-int cmd_dialup (void *p);
-int cmd_hangup (void *p);
-int cmd_quit (void *p);
-int cmd_status (void *p);
-void hangup (void);
-VOID WINAPI rd_callback(UINT unMsg, RASCONNSTATE rasconnstate, DWORD dwError);
-
-
-int
-parse_data_file (const char *file)
-{
-  FILE *in;
-  if ((in = fopen (file, "r"))) {
-    int rc;
-    while (peer_cnt < PEER_max &&
-	   (rc= fscanf (in, "%39s %39s %39s %39s %39s\n",
-			peers[peer_cnt].name,
-			peers[peer_cnt].dun_name,
-			peers[peer_cnt].login,
-			peers[peer_cnt].passwd,
-			peers[peer_cnt].phone_number)) != EOF) {
-
-      if (strcmp (peers[peer_cnt].login, ".") == 0) peers[peer_cnt].login[0] = '\0';
-      if (strcmp (peers[peer_cnt].passwd, ".") == 0) peers[peer_cnt].passwd[0] = '\0';
-      if (strcmp (peers[peer_cnt].phone_number, ".") == 0) peers[peer_cnt].phone_number[0] = '\0';
-      
-      if (rc >= 2) /* we must have at least .name and .dun_name */
-	++peer_cnt;
-    }
-    fclose (in);
-    return 0;
-  }
-  return -1;
-}
-
-void
-set_state (int state)
-{
-#define set_state(state_) ((prev_state=curr_state), (curr_state=(state_)))
-  if (state != curr_state)
-    set_state (state);
-#undef set_state
-}
-
-static void
-update_state_by_rc_state ()
-{
-  puts ("trace update_state_by_rc_state ()");
-  switch (rc_state) {
-  case RASCS_ConnectDevice:
-    set_state (STATE_dialing);
-    break;
-  case RASCS_Connected:
-    set_state (STATE_online);
-    break;
-  case RASCS_Disconnected:
-    set_state (STATE_offline);
-    hangup ();
-    break;
-  }
-}
-
-void
-rd_callback(UINT unMsg, RASCONNSTATE rasconnstate, DWORD dwError)
-{
-  if (unMsg != WM_RASDIALEVENT)
-    return;
-  if (rc_state != rasconnstate) {
-    rc_state = rasconnstate;
-    update_state_by_rc_state ();
-  }
-}
-
-struct peer *
-get_peer (const char *name)
-{
-  int i;
-  for (i=0; i < peer_cnt; ++i)
-    if (strcmp (peers[i].name, name) == 0)
-      return &peers[i];
-
-  return 0; /* peer not exist */
-}
+int reported_curr_state = STATE_startup;
+int reported_prev_state = STATE_startup;
 
 
 struct options {
@@ -130,6 +54,11 @@ struct options {
 } opts;
 
 SOCKET sock;
+fd_set sock_readfds, sock_writefds, sock_exceptfds;
+enum {POLL_block, POLL_wait, POLL_nonblock};
+
+struct sockaddr_in *login_sn;
+
 
 #define MTYPE_invalid 0
 #define MTYPE_test 1
@@ -162,18 +91,121 @@ struct dm_msg {
 			   ((mp)->h.type = MTYPE_dm))
 };
 
+struct dm_msg msg_template;
+
+
+/* =========================================== */
+int parse_data_file (const char *file);
+void set_state (int state);
+static void update_state_by_rc_state ();
+void rd_callback(UINT unMsg, RASCONNSTATE rasconnstate, DWORD dwError);
+struct peer *get_peer (const char *name);
+int make_recv_socket (struct sockaddr_in *sn);
+int init_sockets ();
+int recv_msg (struct msg *msg);
+int recv_dm_msg (struct dm_msg *msg);
+int poll_socket (int poll_type);
+int reply_dm_msg (struct dm_msg *msg);
+int handle_login (struct dm_msg *msg);
+void tick_state ();
+void tick ();
+void dispatch ();
+void Usage(char *programName);
+int HandleOptions(int argc,char *argv[]);
+int cmd_ignore (void *p);
+int cmd_dialup (void *p);
+int cmd_hangup (void *p);
+int cmd_quit (void *p);
+void update_state ();
+int cmd_status (void *p);
+void hangup ();
+void init ();
+void cleanup ();
+int main (int ac, char **av);
+
+int parse_data_file (const char *file)
+{
+  FILE *in;
+  if ((in = fopen (file, "r"))) {
+    int rc;
+    while (peer_cnt < PEER_max &&
+	   (rc= fscanf (in, "%39s %39s %39s %39s %39s\n",
+			peers[peer_cnt].name,
+			peers[peer_cnt].dun_name,
+			peers[peer_cnt].login,
+			peers[peer_cnt].passwd,
+			peers[peer_cnt].phone_number)) != EOF) {
+
+      if (strcmp (peers[peer_cnt].login, ".") == 0) peers[peer_cnt].login[0] = '\0';
+      if (strcmp (peers[peer_cnt].passwd, ".") == 0) peers[peer_cnt].passwd[0] = '\0';
+      if (strcmp (peers[peer_cnt].phone_number, ".") == 0) peers[peer_cnt].phone_number[0] = '\0';
+      
+      if (rc >= 2) /* we must have at least .name and .dun_name */
+	++peer_cnt;
+    }
+    fclose (in);
+    return 0;
+  }
+  return -1;
+}
+
+void set_state (int state)
+{
+#define set_state(state_) ((prev_state=curr_state), (curr_state=(state_)))
+  if (state != curr_state)
+    set_state (state);
+#undef set_state
+}
+
+static void update_state_by_rc_state ()
+{
+  puts ("trace update_state_by_rc_state ()");
+  switch (rc_state) {
+  case RASCS_ConnectDevice:
+    set_state (STATE_dialing);
+    break;
+  case RASCS_Connected:
+    set_state (STATE_online);
+    break;
+  case RASCS_Disconnected:
+    set_state (STATE_offline);
+    hangup ();
+    break;
+  }
+}
+
+void rd_callback(UINT unMsg, RASCONNSTATE rasconnstate, DWORD dwError)
+{
+  if (unMsg != WM_RASDIALEVENT)
+    return;
+  if (rc_state != rasconnstate) {
+    rc_state = rasconnstate;
+    update_state_by_rc_state ();
+  }
+}
+
+struct peer *get_peer (const char *name)
+{
+  int i;
+  for (i=0; i < peer_cnt; ++i)
+    if (strcmp (peers[i].name, name) == 0)
+      return &peers[i];
+
+  return 0; /* peer not exist */
+}
+
 
 /*** Sockets ***/
-int
-make_recv_socket (struct sockaddr_in *sn)
+int make_recv_socket (struct sockaddr_in *sn)
 {
   if ((sock = socket (sn->sin_family, SOCK_DGRAM, 0)) == INVALID_SOCKET)
     return -1;
   return bind (sock, sn, sizeof *sn);
 }
 
-int
-init_sockets ()
+
+
+int init_sockets ()
 {
   WORD wVersionRequested;
   WSADATA wsaData;
@@ -191,8 +223,7 @@ init_sockets ()
 }
 
 /*** Messages ***/
-int
-recv_msg (struct msg *msg)
+int recv_msg (struct msg *msg)
 {
   unsigned short old_size = msg->size;
 
@@ -204,17 +235,73 @@ recv_msg (struct msg *msg)
   return err;
 }
 
-int
-send_msg_to (struct msg *msg, struct sockaddr_in *sn) {
-  return sendto (sock,
-		 (char *) msg, ntohs(msg->size),
-		 IPPROTO_UDP, /* should we better use 0 for default protocol? */
-		 sn, sizeof *sn);
+int recv_dm_msg (struct dm_msg *msg)
+{
+  unsigned short old_size = msg->h.size;
+  struct sockaddr_in sn;
+  int sn_size = sizeof sn;
+
+  int err = recvfrom (sock, (char *) msg, ntohs (msg->h.size), 0, (void *)&sn, &sn_size);
+  if (err != SOCKET_ERROR) {
+    if (old_size != msg->h.size)
+      msg->h.type = htons (MTYPE_invalid);
+    /* Don't allow wrong (!?) sender_addr/sender_port fields in msg */
+    if (sn.sin_addr.s_addr != msg->sender_addr)
+      msg->h.type = htons (MTYPE_invalid);
+    if (sn.sin_port != msg->sender_port)
+      msg->h.type = htons (MTYPE_invalid);
+  }
+
+
+  return err;
 }
 
-/* Return dm_msg MSG to sender */
-int
-reply_dm_msg (struct dm_msg *msg)
+int poll_socket (int poll_type)
+{
+  struct timeval tv, *tvp=&tv;
+  int sock_nfds;
+  if (poll_type == POLL_wait) {
+    tv.tv_sec = 0;
+    tv.tv_usec = 250000;
+  } else if (poll_type == POLL_nonblock) {
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+  } else /* if (poll_type == POLL_block) */ {
+    tvp=0;
+  }
+
+  FD_ZERO (&sock_readfds);
+  FD_ZERO (&sock_writefds);
+  FD_ZERO (&sock_exceptfds);
+  FD_SET (sock, &sock_readfds);
+  sock_nfds = sock;
+
+  return select (sock_nfds, &sock_readfds, &sock_writefds, &sock_exceptfds, tvp);
+  /* Note: According to w32SDK-help we could just pass NULL for each
+     fd-set on w32 systems -bw */
+}
+
+int send_msg_to (struct msg *msg, struct sockaddr_in *sn) {
+  return sendto (sock,
+		 (char *) msg, ntohs(msg->size),
+		 0, sn, sizeof *sn);
+}
+
+int send_dm_string (const char *s, struct sockaddr_in *sn) {
+  int err;
+  struct dm_msg msg = msg_template;
+  strncpy (msg.txt, s, (sizeof msg.txt) - 1);
+  db_tracef(("trace send_dm_string: %s addr: 0x%p port: %u\n", s,
+	 dm_msg__hsender_addr(&msg),
+	 (unsigned)dm_msg__hsender_port(&msg)));
+  if ((err = send_msg_to (&msg.h, sn)) == SOCKET_ERROR)
+    printf ("error in send_dm_string: %d\n", WSAGetLastError());
+  return err;
+}
+
+/* Return dm_msg MSG to sender. */
+/* The original msg->sender_addr|port are kept. */
+int reply_dm_msg (struct dm_msg *msg)
 {
   struct sockaddr_in sn;
   sn.sin_family = PF_INET;
@@ -224,10 +311,83 @@ reply_dm_msg (struct dm_msg *msg)
   return send_msg_to (&msg->h, &sn);
 }
 
+/* If MSG is a 'L' try to perform login/logout.  Otherwise, test if
+   MSG sender is allowed to send restricted commands which require a
+   succesful login.  Returns 0 for succes. */
+int handle_login (struct dm_msg *msg)
+{
+  static struct sockaddr_in sn = { PF_INET, };
+
+  if (msg->txt[0] == 'L') {
+    switch (msg->txt[1]) {
+    case 'i':
+      if (!sn.sin_addr.s_addr && !sn.sin_port) {
+	sn.sin_port = dm_msg__nsender_port (msg);
+	sn.sin_addr.s_addr = dm_msg__nsender_addr (msg);
+	login_sn = &sn;
+	return 0;
+      }
+      break;
+    case 'o':
+      if (sn.sin_port == dm_msg__nsender_port (msg) &&
+	  sn.sin_addr.s_addr == dm_msg__nsender_addr (msg)) {
+	sn.sin_addr.s_addr = 0;
+	sn.sin_port = 0;
+	login_sn = 0;
+	return 0;
+      }
+      break;
+    default:
+      return -1;
+    }
+  } else {
+    if (sn.sin_port == dm_msg__nsender_port (msg) &&
+	sn.sin_addr.s_addr == dm_msg__nsender_addr (msg))
+      return 0;
+  }
+  return -1;
+}
+
+void tick_state ()
+{
+  char *s=0;
+
+  update_state ();
+  if (reported_curr_state != curr_state) {
+    if (prev_state <= STATE_offline) {
+      if (curr_state == STATE_dialing)
+	s="Sd";
+    } else if (prev_state == STATE_dialing) {
+      if (curr_state == STATE_online) {
+	s="Sc";
+      } else if (curr_state == STATE_offline) {
+	s="Sf";
+      }
+    } else if (prev_state == STATE_online) {
+      s="Sx";
+    }
+
+    if (s && login_sn)
+      send_dm_string (s, login_sn);
+
+    reported_curr_state = curr_state;
+    reported_prev_state = prev_state;
+  }
+}
+
+/* tick - propagate timer ticks */
+/* tick() is called for each timout and for each arrieved message.  If
+ SLOW is set, this tick() was called from a timer but. */
+void tick (int slow)
+{
+  db_trace("tick()");
+  if (slow) {
+    tick_state();
+  }
+}
 
 /*** Mesage Processing ***/
-void
-dispatch ()
+void dispatch ()
 {
   int c, i, err;
   struct sockaddr_in sock_name;
@@ -244,34 +404,86 @@ dispatch ()
       printf ("cannot bind socket: %d\n", WSAGetLastError());
       return;
     } else {
-      /* Message Loop */
+      int msg_pending=0; /* FIXME */
       struct dm_msg msg;
+      
       dm_msg__init (&msg);
 
+      /* init our template for creating sending messages */
+      dm_msg__init (&msg_template);
+      /* Note: I assume 4 byte addresses in next line.  This works for IPv4 addresses */
+      memcpy (&msg_template.sender_addr, gethostbyname ("localhost")->h_addr_list[0], 4);
+      msg_template.sender_port = sock_name.sin_port;
+      
+      /* event loop */
       for (;;) {
-	int err = recv_msg (&msg.h);
-	puts("got message");
-	if (err == SOCKET_ERROR) {
-	  printf ("Last Error: %d\n", WSAGetLastError());
-	  break; // XXX
-	}
-	else if (dm_msg__htype (&msg) != MTYPE_dm)
-	  {
-	    printf("wrong type of message <%d>\n", msg.h.type);
-	    continue; // XXX
-	  }
+	int ps_res;
+	int poll_type 
+	  = ((msg_pending) ? POLL_nonblock
+	     : ((curr_state > STATE_offline) ? POLL_wait : POLL_block));
+	
+	if ((ps_res = poll_socket (poll_type))== SOCKET_ERROR) {
+	  puts("Socket Error");
+	  /* TODO */ break; /* ???-bw/17-Sep-00 */
 
-	switch (msg.txt[0]) {
-	case 'C':
-	  if ((c = msg.txt[1])) {
-	    for (i=0; i < CMD_nmb; ++i) {
-	      if (cmd_chars[i] == c && cmd_hooks[i]) {
-		(cmd_hooks[i]) (&msg.txt[2]); }}}
-	  break;
-	case 'D':
-	  fprintf (stderr, "debug prev_state: %d curr_state: %d rc_state: %d\n",
-		   prev_state, curr_state, rc_state);
-	  break;
+	} else {
+	  tick(!msg_pending);
+
+	  msg_pending = 0; /* reset */
+
+	  /* Receive and process all pending messages */
+	  if (ps_res > 0 && FD_ISSET (sock, &sock_readfds)) {
+	    int err;
+	    msg_pending = 1;
+
+	    err = recv_msg (&msg.h);
+
+	    db_tracef(("trace recv_dm_msg: %s addr: 0x%p port: %u\n", msg.txt,
+		   dm_msg__hsender_addr(&msg),
+		   (unsigned)dm_msg__hsender_port(&msg)));
+
+	    db_trace("got message");
+	    if (err == SOCKET_ERROR) {
+	      printf ("Last Error: %d\n", WSAGetLastError());
+	      break; // XXX
+	    }
+	    else if (dm_msg__htype (&msg) != MTYPE_dm)
+	      {
+		printf("wrong type of message <%d>\n", msg.h.type);
+		continue; // XXX
+	      }
+
+	    switch (msg.txt[0]) {
+	    case 'C': /* command */
+	      if (!handle_login (&msg) && (c = msg.txt[1])) {
+		for (i=0; i < CMD_nmb; ++i) {
+		  if (cmd_chars[i] == c && cmd_hooks[i]) {
+		    (cmd_hooks[i]) (&msg.txt[2]);
+		    msg.txt[0]='R'; msg.txt[0]='o';
+		    reply_dm_msg (&msg);
+		    break;
+		  }
+		}
+	      } else {
+		msg.txt[0]='R'; msg.txt[0]='e';
+		reply_dm_msg (&msg);
+	      }
+	      break;
+	    case 'D': /* debug */
+	      fprintf (stderr, "debug prev_state: %d curr_state: %d rc_state: %d\n",
+		       prev_state, curr_state, rc_state);
+	      break;
+	    case 'L':  /* login, logout */
+	      if (handle_login (&msg)) {
+		msg.txt[0]='R'; msg.txt[0]='e';
+		reply_dm_msg (&msg);
+	      } else {
+		msg.txt[0]='R'; msg.txt[0]='o';
+		reply_dm_msg (&msg);
+	      }
+	      break;
+	    }
+	  }
 	}
       }
     }
@@ -346,15 +558,13 @@ int HandleOptions(int argc,char *argv[])
 
 
 /*** Commands ***/
-int
-cmd_ignore (void *p)
+int cmd_ignore (void *p)
 {
-  fprintf (stderr, "cmd_ignore(%s)\n", (const char *)p);
+  db_tracef (("cmd_ignore(%s)\n", (const char *)p));
   return 0;
 }
 
-int
-cmd_dialup (void *p)
+int cmd_dialup (void *p)
 {
   DWORD error;
   char buf[512];
@@ -368,9 +578,10 @@ cmd_dialup (void *p)
       curr_state != STATE_startup) /* we could leave such checks to windows */
     return;
 #endif
-  fprintf (stderr, "cmd_dialup(%s)\n", (const char *)p);
+  db_tracef (("cmd_dialup(%s)\n", (const char *)p));
   //  set_state (STATE_dialing); // XXX
   if (!(peer = get_peer (p))) {
+    fprintf(stderr, "unknown peer <%s>\n", (const char *)p);
     //    set_state (STATE_offline); // XXX
   } else {
     dial_params.dwSize = 1052;  /* XXX-bw/8-Sep-00 stupid Windows95 */
@@ -380,28 +591,29 @@ cmd_dialup (void *p)
     lstrcpy (dial_params.szPhoneNumber, peer->phone_number);
     dial_params.szCallbackNumber[0] = '*';
     dial_params.szDomain[0] = '*';
+    set_state (STATE_dialing); tick_state();
     if ((error = RasDial (0, 0, &dial_params, 0, rd_callback, &ras_conn))) {
       char buf[256];
       RasGetErrorStringA(error, buf, sizeof buf);
       fprintf (stderr, "Error %d: %s\n", error, &buf);
     }
     if (!ras_conn)
-      set_state (STATE_offline);
+      {
+	set_state (STATE_offline); tick_state ();
+      }
   }
   return 0;
 
 }
 
-int
-cmd_hangup (void *p)
+int cmd_hangup (void *p)
 {
-  fprintf (stderr, "cmd_hangup(%s)\n", (const char *)p);
+  db_tracef (("cmd_hangup(%s)\n", (const char *)p));
   hangup();
   return 0;
 }
 
-int
-cmd_quit (void *p)
+int cmd_quit (void *p)
 {
   fprintf (stderr, "cmd_quit(%s)\n", (const char *)p);
   hangup(); /* already in atexit() */
@@ -410,36 +622,7 @@ cmd_quit (void *p)
   return 0;
 }
 
-/*** Temporary Code using files to signal states ***/
-FILE *state_files[STATE_nmb];
-char *state_file_names[STATE_nmb];
-
-FILE *file_state_dialing, *file_state_offline, *file_state_lock1, *lock2;
-int reported_curr_state = STATE_startup;
-int reported_prev_state = STATE_startup;
-
-void
-set_file_state (int state)
-{
-  if (!state_files[state] && state_file_names[state])
-    {
-      state_files[state] = fopen (state_file_names[state], "w");
-    }
-}
-
-void
-clear_file_state (int state)
-{
-  if (state_files[state])
-    {
-      fclose (state_files[state]);
-      state_files[state] = 0;
-      remove (state_file_names[state]);
-    }
-}
-
-void
-update_state ()
+void update_state ()
 {
   int error;
   if (ras_conn && curr_state == STATE_online)
@@ -458,54 +641,26 @@ update_state ()
     }
 }
 
-int
-cmd_status (void *p)
+int cmd_status (void *p)
 {
   //  fprintf (stderr, "cmd_status(%s)\n", (const char *)p);
-  update_state ();
-#if 0
-  fprintf (stderr, "debug prev_state: %d curr_state: %d rc_state: %d\n",
-	  prev_state, curr_state, rc_state);
-#endif
-  if (reported_curr_state == curr_state &&
-      reported_prev_state == prev_state)
-    return 0;
-
-  if (reported_prev_state != prev_state)
-    clear_file_state (reported_prev_state);
-  if (reported_curr_state != curr_state)
-    clear_file_state (reported_curr_state);
-
-  set_file_state (curr_state);
-  
-  reported_curr_state = curr_state;
-  reported_prev_state = prev_state;
-  
-
+  tick_state();
   return 0;
 }
 
-void
-hangup ()
+void hangup ()
 {
-  fprintf (stderr, "hangup() 0x%p\n", ras_conn);
+  db_tracef(("hangup() 0x%p\n", ras_conn));
   if (ras_conn) {
     RasHangUp (ras_conn);
     ras_conn=0;
-    set_state (STATE_offline);
+    set_state (STATE_offline); tick_state ();
   }
 }
 
-void
-init ()
+void init ()
 {
   int i;
-  state_file_names[STATE_dialing] = "C:/WINDOWS/TEMP/tkdialup_dialing";
-  state_file_names[STATE_online] = "C:/WINDOWS/TEMP/tkdialup_online";
-  state_file_names[STATE_offline] = "C:/WINDOWS/TEMP/tkdialup_offline";
-  for (i=0; i < STATE_nmb; ++i)
-    if (state_file_names[i])
-      remove (state_file_names[i]);
   rc_status.dwSize = 160; /* XXX-bw/10-Sep-00 stupid Windows95 */
 
   cmd_hooks[CMD_quit] = cmd_quit;
@@ -533,27 +688,22 @@ init ()
   }
 #endif
 #ifdef site_data_file	
-      parse_data_file (default_data_file);
+  parse_data_file (default_data_file);
 #endif
 #ifdef default_data_file	
-      parse_data_file (default_data_file);
+  parse_data_file (default_data_file);
 #endif
 }
 
-void
-cleanup ()
+void cleanup ()
 {
   int i;
   hangup();
-  for (i=0; i < STATE_nmb; ++i)
-    clear_file_state (i);
-
   sleep (3000); /* safe hangup */
 }
 
 
-int
-main (int ac, char **av)
+int main (int ac, char **av)
 {
   HandleOptions (ac, av);
   init ();
