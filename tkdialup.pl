@@ -1,5 +1,5 @@
 #! /usr/local/bin/perl -w
-## $Id: tkdialup.pl,v 1.2 2000/08/30 22:43:46 bertw Exp bertw $
+## $Id: tkdialup.pl,v 1.3 2000/09/01 22:17:05 bertw Exp bertw $
 
 use strict;
 use dm;
@@ -15,18 +15,15 @@ $0 =~ m!^(.*)/([^/]*)$! or die "path of program file required (e.g. ./$0)";
 my ($progdir, $progname) = ($1, $2);
 
 ## ========================== Preferences  ========================
-my %cfg_gui_default= ('.config_tag' => 'gui', '.config_version' => '1.0',
+my %cfg_gui_default= ('.config_tag' => 'gui',
 		      balloon_help => '1', show_rtc => '1', show_progress_bar => '1', show_disconnect_button => '1',
 		      graph_bgcolor => 'Grey85', graph_nrcolor => 'Grey70', graph_ercolor => 'Grey55',
 		      lang => 'de');
 my %cfg_gui = %cfg_gui_default;
 $cfg_gui{'.config_default'}=\%cfg_gui_default;
-#my $cfg_file="${progdir}/tkdialup.cfg";
-#my $cfg_file_usr=$ENV{"HOME"} . "/.tkdialup.cfg";
+my %cfg_tkdialup= ('.config_version' => '1.0', $cfg_gui{'.config_tag'} => \%cfg_gui);
 my $cfg_file="${progdir}/dialup_manager.cfg";
 my $cfg_file_usr=$ENV{"HOME"} . "/.dialup_manager.cfg";
-my %cfg_tkdialu= ('.config_version' => '1.0', $cfg_gui{'.config_tag'} => \%cfg_gui);
-my @cfg_tkdialup= ('1.0', \%cfg_gui);
 ## ========================== Main Window ===========================
 my $main_widget;
 my %widgets;
@@ -1077,9 +1074,19 @@ sub cfg_editor_window( $$ ) {
     my $item_entry = $win->Entry();
 
     my $frame3 = $win->Frame;
-    my $item_del_bt = $frame3->Button(-text => 'Delete', -command => sub{item_del_bt($box)});
+    my $item_del_bt = $frame3->Button(-text => 'Delete Peer',
+    -command => sub {
+	my $idx = $box->index('active');
+	my $isp = $dm::isps[$idx];
+	db_trace("idx: $idx isp:$isp");
+	$box->delete($idx);
+	splice (@cfg__isp_cfg_cache, $idx, 1);
+	delete $widgets{$isp};
+        dm::remove_isp_by_index ($idx);
+	cfg_update_gadgets ($box->index('active'), \@pcfg_widgets);
+	});
     my $edit_bt = $frame3->Button(-text => 'Edit Rate', -command => sub{item_edit_bt($box, $box->index('active'))});
-    my $item_add_bt = $frame3->Button(-text => 'Add', -command => sub{item_add_bt($box)});
+    my $item_add_bt = $frame3->Button(-text => 'Add Peer', -command => sub{item_add_bt($box)});
 #my $view_bt = $frame3->Button(-text => 'View', -command => sub{view_bt($box)});
 
     my $frame2 = $win->Frame;
@@ -1092,7 +1099,7 @@ sub cfg_editor_window( $$ ) {
 				 } else { $win->destroy }};
     
     my $exit_bt = $frame2->Button(-text => 'Close', -command => $close_or_restart);
-    my $save_bt = $frame2->Button(-text => 'Save', -command => sub{ dm::save_config(); &$close_or_restart; });
+    my $save_bt = $frame2->Button(-text => 'Save+Close', -command => sub{ dm::save_config(); &$close_or_restart; });
 
     foreach (@dm::isps) {
 	$box->insert('end', $_);
@@ -1116,8 +1123,9 @@ sub cfg_editor_window( $$ ) {
 	mask_widget ($top->Frame, 0, \@pcfg_widgets, \@pcfg_types, \@pcfg_labels, $dm::isp_cfg_map{$isp});
 #exp#	$entries[0]->configure(-invcmd => 'bell', -vcmd => sub { 0; }, -validate => 'focusout');
 	my $frame1 = $top->Frame;
-	$frame1->Button(-text => 'Cancel', -command => sub{edit_bt_cancel($top)})->pack(-side => 'left');
-	$frame1->Button(-text => 'Apply', -command => sub{edit_bt_ok($top, $box, 0, \@pcfg_widgets)})->pack(-side => 'right');
+#	$frame1->Button(-text => 'Cancel', -command => sub{edit_bt_cancel($top)})->pack(-side => 'left');
+	$frame1->Button(-text => 'Apply',
+			-command => sub{edit_bt_ok($top, $box, 0, \@pcfg_widgets)})->pack(-expand => 1, -fill => 'both', -side => 'right');
 	$frame1->pack(-fill => 'x');
 	$top->pack(-expand => 1, -fill => 'both');
     }
@@ -1410,8 +1418,7 @@ if ($current_applang ne $cfg_gui{'lang'}) {
     init_locale ();
     read_locale ($cfg_gui{'lang'});
 }
-#dm::write_config ("/home/bertw/.dialup_manager.cfg", "tkdialup-config", \%cfg_gui);
-#read_config ("/home/bertw/.dialup_manager.cfg", "tkdialup-config", \%cfg_gui) or die;
+
 make_gui_mainwindow();
 MainLoop;
 }
