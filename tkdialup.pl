@@ -1,5 +1,5 @@
 #! /usr/local/bin/perl -w
-## $Id$
+## $Id: tkdialup.pl,v 1.2 2000/08/30 22:43:46 bertw Exp bertw $
 
 use strict;
 use dm;
@@ -11,12 +11,37 @@ use Tk::Balloon;
 die unless defined $dm::state;
 
 my $APPNAME="tkdialup";
-my $applang="de"; # de | en
 $0 =~ m!^(.*)/([^/]*)$! or die "path of program file required (e.g. ./$0)";
 my ($progdir, $progname) = ($1, $2);
-my $cfg_file="${progdir}/tkdialup.cfg";
-my $cfg_file_usr=$ENV{"HOME"} . "/.tkdialup.cfg";
 
+## ========================== Preferences  ========================
+my %cfg_gui_default= ('.config_tag' => 'gui', '.config_version' => '1.0',
+		      balloon_help => '1', show_rtc => '1', show_progress_bar => '1', show_disconnect_button => '1',
+		      graph_bgcolor => 'Grey85', graph_nrcolor => 'Grey70', graph_ercolor => 'Grey55',
+		      lang => 'de');
+my %cfg_gui = %cfg_gui_default;
+$cfg_gui{'.config_default'}=\%cfg_gui_default;
+#my $cfg_file="${progdir}/tkdialup.cfg";
+#my $cfg_file_usr=$ENV{"HOME"} . "/.tkdialup.cfg";
+my $cfg_file="${progdir}/dialup_manager.cfg";
+my $cfg_file_usr=$ENV{"HOME"} . "/.dialup_manager.cfg";
+my %cfg_tkdialu= ('.config_version' => '1.0', $cfg_gui{'.config_tag'} => \%cfg_gui);
+my @cfg_tkdialup= ('1.0', \%cfg_gui);
+## ========================== Main Window ===========================
+my $main_widget;
+my %widgets;
+my %cmd_button_widgets;
+my $disconnect_button;
+my $rtc_widget;
+my $pb_widget;
+my ($offs_record, $offs_isp_widget, $offs_sum_widget, $offs_money_per_minute_widget) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+## ============= Peer Config Editor Window =============================
+my @pcfg_widgets;
+my @pcfg_labels = ('Name', 'Up Cmd', 'Down Cmd', 'Label', 'Farbe', 'Tarif', 'Visible');
+my @pcfg_types =  ('text', 'text',   'text',      'text', 'color', 'text',  'flag');
+## ======================= Misc ========================================
+my $db_tracing = defined ($ENV{'DB_TRACING'}); # debug aid
+my $app_has_restarted=1; # force reinit
 # constants
 my $days_per_week = 7;
 my $hours_per_day = 24;
@@ -25,86 +50,13 @@ my $mins_per_day = $mins_per_hour * $hours_per_day;
 my $secs_per_min = 60;
 my $secs_per_hour = $secs_per_min * $mins_per_hour;
 my $secs_per_day = $secs_per_hour * $hours_per_day;
-
-@dm::commands_on_startup = ();
-@dm::commands_before_dialing = (\&clear_gui_counter, \&update_gui_dialing);
-@dm::commands_on_connect = (\&main_window_iconify, \&update_gui_online);
-@dm::commands_on_connect_failure = (\&update_gui_failure, \&clear_gui_counter);
-@dm::commands_on_disconnect = (\&main_window_deiconify, \&update_gui_offline, \&update_gui_counter, \&update_progress_bar);
-
-# Debug Aids
-my $db_tracing = defined ($ENV{'DB_TRACING'});
-
-#### Locale ####
+## ======================= Locale =======================================
+my $lang_has_changed=1;  # force reinit
+my $current_applang="";
 # Locale Defaults (English)
-my @wday_names=('Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday');
+my @wday_names=('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat');
 my %LOC;
-#---- File Menu
-$LOC{'menu_file'}="File";
-$LOC{'menu_file_hangup_now'}="Hangup now";
-$LOC{'menu_file_hangup_now.help'}='Disconnect immediatly by issuing "Down Cmd"';
-$LOC{'menu_file_hangup_defer'}="Hangup later";
-$LOC{'menu_file_hangup_defer.help'}='Disconnect just before the current unit would end';
-$LOC{'menu_file_save'}="Save Configuration";
-$LOC{'menu_file_save.help'}='Keep all configuration changes permanently';
-$LOC{'menu_file_quit'}="Quit";
-$LOC{'menu_file_quit.help'}='Disconnect and terminate this "tkdialup" process immediatly.';
-#---- Edit Menu
-$LOC{'menu_edit'}="Edit";
-$LOC{'menu_edit_options'}="Options";
-$LOC{'menu_edit_options.help'}='Change Programm settings';
-$LOC{'menu_edit_peer_options'}="Peer Options";
-$LOC{'menu_edit_peer_options.help'}='Run a configuration editor. Its not full implemented yet
-You can edit, apply and save  existing peer configurations like:
-dialup command, hangup command, label, color, rate-name, visibility
 
-You can show a rate but you cannot edit rates date.';
-$LOC{'menu_edit_graph_options'}="Graph Options";
-$LOC{'menu_edit_graph_options.help'}='Edit  background and ruler colors of graph window';
-#---- View Menu
-$LOC{'menu_view'}="View";
-$LOC{'menu_view_graph'}="Graph";
-$LOC{'menu_view_graph.help'}='Show time/money graphs of all active peers';
-$LOC{'menu_view_clock'}="Show clock";
-$LOC{'menu_view_progress_bar'}="Show progress bar";
-$LOC{'menu_view_stat'}="Statistic ...";
-$LOC{'menu_view_stat.help'}='Show a time/money history list for this user';
-$LOC{'button_main_hangup'}="Hangup";
-#---- Help Menu
-$LOC{'menu_help'}="Help";
-$LOC{'menu_help_about'}="About ...";
-$LOC{'menu_help_about.help'}='Show information about this program and its author';
-$LOC{'menu_help_balloon_help'}="Mouse Pointer Help";
-$LOC{'menu_help_balloon_help.help'}='Toggle showing balloon help';
-#---- Rate Window
-$LOC{'win_rate_date_start'}='Start Date';
-$LOC{'win_rate_date_start.help'}='Date when this rate became vaild (may be empty if next field is empty too)';
-$LOC{'win_rate_date_end'}='End Date';
-$LOC{'win_rate_date_end.help'}='Date when this rate became or will become invalid';
-$LOC{'win_rate_weekdays'}='Weekdays';
-$LOC{'win_rate_weekdays.help'}='Set of numbers (0..6) representing weekdays (Sun..Sat)';
-$LOC{'win_rate_daytime_start'}='Start Time';
-$LOC{'win_rate_daytime_start.help'}='Daytime on which this rate becomes valid (may be empty if next field is empty too)';
-$LOC{'win_rate_daytime_end'}='End Time';
-$LOC{'win_rate_daytime_end.help'}='Daytime on which tis rate becomes invalid (must end before midnight!)';
-$LOC{'win_rate_money_per_min'}='M/min';
-$LOC{'win_rate_money_per_min.help'}='Payment in money per minute (not per unit!)'; 
-$LOC{'win_rate_secs_per_unit'}='secs/unit';
-$LOC{'win_rate_secs_per_unit.help'}='Length of a unit in seconds';
-$LOC{'win_rate_money_per_connect'}='M/Conn.';
-$LOC{'win_rate_money_per_connect.help'}='Payment per connection (usually 0)';
-$LOC{'win_rate_free_linkup'}='FL';
-$LOC{'win_rate_free_linkup.help'}='Free DialUp (Paying starts not before PPP connection is up)';
-$LOC{'win_rate_overlay_rate'}='OR';
-$LOC{'win_rate_overlay_rate.help'}='Overlay Rate (this may be a additional payment with a different unit length)';
-#--- Main Window
-$LOC{'win_main_start'}="Start";
-$LOC{'win_main_start.help'}="Hit a Button to Connect a Peer";
-$LOC{'win_main_money'}="Money";
-$LOC{'win_main_money.help'}="Real Time Money Counter";
-$LOC{'win_main_rate'}="Rate";
-$LOC{'win_main_rate.help'}="Money per Minute";
-#---
 
 ##--- Protos
  sub db_trace( $ );
@@ -141,29 +93,14 @@ $LOC{'win_main_rate.help'}="Money per Minute";
  sub cfg_update_gadgets( $$ );
  sub cfg_editor_window( $$ );
  sub color_cfg_editor_window( $$ );
- sub read_config( $ );
+ sub read_config( $$$ );
  sub write_config( $ );
+ sub save_config();
  sub read_locale( $ );
 ##---
+
 
 sub db_trace ( $ ) { printf STDERR "trace %s\n", $_[0] if $db_tracing }
-
-my %cfg_gui_default= (balloon_help => '1', show_rtc => '1', show_progress_bar => '1',
-		      graph_bgcolor => 'Grey85', graph_nrcolor => 'Grey70', graph_ercolor => 'Grey55');
-my %cfg_gui = %cfg_gui_default;
-my $main_widget;
-my @entries;
-my %labels;
-my $disconnect_button;
-
-my %widgets;
-my $rtc_widget;
-my $pb_widget;
-my ($offs_record, $offs_isp_widget, $offs_sum_widget, $offs_min_price_widget) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-# data for config editors
-my @cfg_labels = ('Name', 'Up Cmd', 'Down Cmd', 'Label', 'Farbe', 'Tarif', 'Visible');
-my @cfg_types =  ('text', 'text',   'text',      'text', 'color', 'text',  'flag');
-
 
 sub set_color_entry( $$ ) {
     my ($entry, $color) = @_;
@@ -178,7 +115,7 @@ sub update_gui_dial_state( $ ) {
     my ($color) = @_;
     foreach my $isp (@dm::isps) {
 	next unless (dm::get_isp_flag_active ($isp));
-	my $label =  $labels{$isp};
+	my $label =  $cmd_button_widgets{$isp};
 	if (defined $label) {
 	    my $bg_color = ($isp ne $dm::isp_curr) ? $label->parent->cget('-background') : $color;
 	    $label->configure(-background => $bg_color);
@@ -256,7 +193,7 @@ sub update_gui_counter () {
 sub update_gui_pfg_per_minute ( $ ) {
     my ($curr_time)=@_;
     while (my ($isp, $wid) = each (%widgets)) {
-	my $widget=$$wid[$offs_min_price_widget];
+	my $widget=$$wid[$offs_money_per_minute_widget];
 	$widget->delete ('1.0', 'end');
 	$widget->insert('1.0', sprintf ("%.2f", Dialup_Cost::calc_price (dm::get_isp_tarif($isp), $curr_time, 60)));
     }
@@ -310,7 +247,7 @@ sub cb_disconnect () {
     foreach my $isp (@dm::isps) {
 	next unless (dm::get_isp_flag_active ($isp));
 
-	my $label =  $labels{$isp};
+	my $label =  $cmd_button_widgets{$isp};
 	if (defined $label) {
 	    my $bg_color = ($isp ne $dm::isp_curr) ? $label->parent->cget('-background') : 'Grey';
 	    $label->configure(-background => $bg_color);
@@ -498,7 +435,7 @@ sub make_gui_aboutwindow () {
     my ($width, $height) = (200, 200);
 
     my ($about_txt, $about_lines, $about_columns) = ("", 0, 0);
-    if (open (ABT, "$progdir/about-$applang")) {
+    if (open (ABT, "$progdir/about-$cfg_gui{'lang'}")) {
 	while (<ABT>) {
 	    $about_txt .= $_;
 	    $about_lines++;
@@ -546,12 +483,15 @@ sub make_gui_statwindow () {
 }
 
 sub make_gui_mainwindow () {
+    undef %cmd_button_widgets; undef %widgets; # allow restart
+
     $main_widget = MainWindow->new;
-    $main_widget->title("$APPNAME");
-    $main_widget->resizable (0, 0);
+    my $top = $main_widget;
+    $top->title("$APPNAME");
+    $top->resizable (0, 0);
     my $balloon = $main_widget->Balloon();
     #### Menu ####
-    my $menubar = $main_widget->Frame (-relief => 'raised');
+    my $menubar = $top->Frame (-relief => 'raised');
     my $file_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_file'});
     my $file_menu = $file_menu_bt->Menu();
     $file_menu_bt->configure (-menu => $file_menu);
@@ -572,12 +512,13 @@ sub make_gui_mainwindow () {
 		     -variable => \$dm::flag_stop_defer);
 		    
 
-    $file_menu->command (-label => $LOC{'menu_file_save'}, -command => sub { write_config($cfg_file_usr); });
+    $file_menu->command (-label => $LOC{'menu_file_save'}, -command => sub { save_config() });
     $file_menu->command (-label => $LOC{'menu_file_quit'}, -command => sub { cb_disconnect () ; exit });
 
     $edit_menu->command (-label => $LOC{'menu_edit_peer_options'}, -command => sub { cfg_editor_window (100,200) });
     $edit_menu->command (-label => $LOC{'menu_edit_graph_options'}, -command => sub { color_cfg_editor_window (100,200) });
 
+##--- View Menu
     $view_menu->command (-label => "$LOC{'menu_view_graph'} 5 min ...", -command => sub {make_gui_graphwindow(5 * $secs_per_min, 50) });
     $view_menu->command (-label => "$LOC{'menu_view_graph'} 15 min ...", -command => sub {make_gui_graphwindow(15 * $secs_per_min, 100) });
     $view_menu->command (-label => "$LOC{'menu_view_graph'} 30 min ...", -command => sub {make_gui_graphwindow(30 * $secs_per_min, 200) });
@@ -597,6 +538,12 @@ sub make_gui_mainwindow () {
 			                  $pb_widget->pack(-expand => 1, -fill => 'x');
 				       } else { $pb_widget->packForget(); } });
 
+    $view_menu->add ('checkbutton', -label => $LOC{'menu_view_disconnect_button'},
+		     -variable => \$cfg_gui{'show_disconnect_button'},
+		     -command => sub { if (!defined $disconnect_button->manager) {
+			                  $disconnect_button->pack(-expand => 1, -fill => 'x');
+				       } else { $disconnect_button->packForget(); } });
+##---- Help Menu
     $help_menu->add ('checkbutton', -label => $LOC{'menu_help_balloon_help'},
 		     -variable => \$cfg_gui{'balloon_help'},
 		     -command => sub {
@@ -633,7 +580,10 @@ sub make_gui_mainwindow () {
 			      '',
 			      $LOC{'menu_view_stat.help'},
 			      '',
-			      'Enable/disable a digital clock',
+			      $LOC{'menu_view_clock.help'},
+			      $LOC{'menu_view_progress_bar.help'},
+			      $LOC{'menu_view_disconnect_button.help'},
+			      ,
 			      ],);
 
     $balloon->attach($help_menu,
@@ -652,14 +602,14 @@ sub make_gui_mainwindow () {
     $help_menu_bt->pack(-side => 'right');
 
     #### RTC ####
-    my $rtc_frame = $main_widget->Frame;
+    my $rtc_frame = $top->Frame;
     $rtc_widget = $rtc_frame->ROText(-height => 1, -width => rtc_max_width (), -takefocus => 0, -insertofftime => 0);
 
     $rtc_frame->pack(-expand => 1, -fill => 'both' );
     $rtc_widget->pack(-expand => 1, -fill => 'x') if $cfg_gui{'show_rtc'};
 
     #### Controls ####
-	my $button_frame = $main_widget->Frame;
+	my $button_frame = $top->Frame;
     {
 	my $row=0;
 	my $usepack=0;
@@ -674,30 +624,30 @@ sub make_gui_mainwindow () {
 	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_rate.help'}) if $balloon;
 	    $row++;
 	}
+
 	foreach my $isp (@dm::isps) {
 	    next unless (dm::get_isp_flag_active ($isp));
 	    my $frame = $usepack ? $button_frame->Frame : $button_frame;
 		
 	    my $cmd_button = $frame->Button(-text => dm::get_isp_label ($isp),
 				       -command => sub{ cb_dialup ($isp) } );
-	    my $text = $frame->ROText(-height => 1, -width => 10, -takefocus => 0, -insertofftime => 0);
-	    my $min_price = $frame->ROText(-height => 1, -width => 5, -takefocus => 0, -insertofftime => 0);
+	    my $money_counter = $frame->ROText(-height => 1, -width => 10, -takefocus => 0, -insertofftime => 0);
+	    my $money_per_minute = $frame->ROText(-height => 1, -width => 5, -takefocus => 0, -insertofftime => 0);
 
 	    $cmd_button->configure(-background => 'Cyan') if ($isp eq $dm::isp_curr);
 
 	    if ($usepack) {
 		$cmd_button->pack(-expand => 1, -fill => 'x', -side => 'left');
-		$min_price->pack(-side => 'right');
-		$text->pack(-side => 'right');
+		$money_per_minute->pack(-side => 'right');
+		$money_counter->pack(-side => 'right');
 		$frame->pack(-expand => 1, -fill => 'x');
 	    } else {
 		$cmd_button->grid(-column => 0, -row => $row, -sticky => "ew");
-		$text->grid(-column => 1, -row => $row, -sticky => "ew");
-		$min_price->grid(-column => 2, -row => $row, -sticky => "ew");
+		$money_counter->grid(-column => 1, -row => $row, -sticky => "ew");
+		$money_per_minute->grid(-column => 2, -row => $row, -sticky => "ew");
 	    }
-	    $entries[$#entries+1] = $text;
-	    $labels{$isp} = $cmd_button;
-	    $widgets{$isp} = [0, $cmd_button, $text, $min_price];
+	    $cmd_button_widgets{$isp} = $cmd_button;
+	    $widgets{$isp} = [0, $cmd_button, $money_counter, $money_per_minute];
 	    $row++;
 	}
 	    $button_frame->pack(-expand => 1, -fill => 'x');
@@ -707,7 +657,7 @@ sub make_gui_mainwindow () {
 
     #### Progress Bar ####
     {
-	my $pb_frame=$main_widget->Frame();
+	my $pb_frame=$top->Frame();
 	my $pb = $pb_frame->ProgressBar
 	    (
 #	     -length => 220,
@@ -726,17 +676,16 @@ sub make_gui_mainwindow () {
 	$pb_frame->pack(-expand => 1, -fill => 'x');
     }
     {
-	my $frame = $main_widget->Frame;
-	my $b1 = $frame->Button(-text => "$LOC{'button_main_hangup'}", -command => sub{cb_disconnect});
-	$balloon->attach($b1, -balloonmsg => 'Disconnect immediatly by issuing "Down Cmd"') if $balloon;
+	my $frame = $top->Frame;
+	$disconnect_button = $frame->Button(-text => "$LOC{'button_main_hangup'}", -command => sub{cb_disconnect});
+	$balloon->attach($disconnect_button, -balloonmsg => 'Disconnect immediatly by issuing "Down Cmd"') if $balloon;
 	my $b2 = $frame->Button(-text => 'Graph', -command => sub{make_gui_graphwindow(30 * $secs_per_min, 200)});
 	my $b3 = $frame->Button(-text => 'Exp-Graph', -command => sub{exp_make_gui_graphwindow()});
 	
-	$b1->pack(-expand => 1, -fill => 'x', -side => 'left');
+	$disconnect_button->pack(-expand => 1, -fill => 'x', -side => 'left') if $cfg_gui{'show_disconnect_button'};
 #	$b2->pack(-expand => 1, -fill => 'x',  -side => 'left');
 #	$b3->pack(-expand => 1, -fill => 'x',  -side => 'left') if defined &exp_make_gui_graphwindow;
 	$frame->pack(-expand => 1, -fill => 'x');
-	$disconnect_button=$b1;
     }
     $main_widget->repeat (1000, sub{update_gui()});
     $main_widget->repeat (1000, sub{dm::tick()});
@@ -750,6 +699,8 @@ sub make_gui_mainwindow () {
 	state_trans_offline_to_dialing ();
 #	state_trans_dialing_to_online ();
     }
+
+    $top->pack() if $top != $main_widget;
 }
 
 sub main_window_iconify () {
@@ -850,21 +801,27 @@ sub mask_widget( $$$$$$ ) {
 }
 
 my @cfg__isp_cfg_cache;
+my $cc=0;
 sub edit_bt_ok( $$$$ ) {
     my ($frame, $lb, $index, $widgets) = @_;
     my @config_values;
 
     # copy values from widgets to array @config_values
     foreach my $i (0..$#$widgets) {
-	if ($cfg_types[$i] eq 'text') {
+	if ($pcfg_types[$i] eq 'text') {
 	    $config_values[$#config_values+1] = $$widgets[$i]->get;
-	} elsif ($cfg_types[$i] eq 'color') {
+	} elsif ($pcfg_types[$i] eq 'color') {
 	    $config_values[$#config_values+1] = $$widgets[$i]->get;
 	    set_color_entry ($$widgets[$i], $$widgets[$i]->get);
-	} elsif ($cfg_types[$i] eq 'flag') {
+	} elsif ($pcfg_types[$i] eq 'flag') {
 	    $config_values[$#config_values+1] = $$widgets[$i]->{'Value'};
 	}
     }
+
+    my $isp = $config_values[0];
+
+    # note change in peer visibility to force building a new mainwindow
+    $cc++ if (dm::get_isp_cfg($isp, $dm::cfg_active) != $config_values[$dm::cfg_active]);
 
     # update (overwrite) global configuration for this ISP
     # (widgets are currently in same order as global ISP config table is
@@ -872,7 +829,6 @@ sub edit_bt_ok( $$$$ ) {
     dm::set_isp_cfg (\@config_values);
 
     # update our configuration cache to reflect change in global configuration made above
-    my $isp = $config_values[0];
     foreach my $i (0..$#cfg__isp_cfg_cache) {
 	my $r = $cfg__isp_cfg_cache[$i];
 	if ($$r[$dm::cfg_isp] eq $isp) {
@@ -1092,14 +1048,14 @@ sub cfg_update_gadgets( $$ ) {
     my $cfg = $cfg__isp_cfg_cache[$idx];
     for (my $i=0; $i < $dm::cfg_SIZE; $i++) {
 #	$$cfg[$i]=$$gadgets[$i]->get();
-	if ($cfg_types[$i] eq 'text') {
+	if ($pcfg_types[$i] eq 'text') {
 	    $$gadgets[$i]->delete(0, 'end');
 	    $$gadgets[$i]->insert(0, $$cfg[$i]);
-	} elsif ($cfg_types[$i] eq 'color') {
+	} elsif ($pcfg_types[$i] eq 'color') {
 	    $$gadgets[$i]->delete(0, 'end');
 	    $$gadgets[$i]->insert(0, $$cfg[$i]);
 	    set_color_entry ($$gadgets[$i], $$cfg[$i]);
-	} elsif ($cfg_types[$i] eq 'flag') {
+	} elsif ($pcfg_types[$i] eq 'flag') {
 	    if ($$cfg[$i]) { $$gadgets[$i]->select; } else { $$gadgets[$i]->deselect; }
 	}
     }
@@ -1127,13 +1083,17 @@ sub cfg_editor_window( $$ ) {
 #my $view_bt = $frame3->Button(-text => 'View', -command => sub{view_bt($box)});
 
     my $frame2 = $win->Frame;
-    my $exit_bt = $frame2->Button(-text => 'Close',
-				  -command => sub { undef @cfg__isp_cfg_cache; $win->destroy() });
-#    my $exit_bt = $frame2->Button(-text => 'Cancel', -command => sub{ $frame2->chooseColor();});
-    my $save_bt = $frame2->Button(-text => 'Save',
-				  -command => sub{ dm::save_config();
-						   undef @cfg__isp_cfg_cache;
-						   $win->destroy() });
+    my $close_or_restart = sub { undef @cfg__isp_cfg_cache;
+				 if ($cc) {
+				     $cc=0;
+				     $app_has_restarted=1;
+				     $win->destroy;
+				     $main_widget->destroy;
+				 } else { $win->destroy }};
+    
+    my $exit_bt = $frame2->Button(-text => 'Close', -command => $close_or_restart);
+    my $save_bt = $frame2->Button(-text => 'Save', -command => sub{ dm::save_config(); &$close_or_restart; });
+
     foreach (@dm::isps) {
 	$box->insert('end', $_);
 	my @cfg;
@@ -1153,11 +1113,11 @@ sub cfg_editor_window( $$ ) {
     {
 	my $isp = $box->get(0);
 	my $top = $win->Frame;
-	mask_widget ($top->Frame, 0, \@entries, \@cfg_types, \@cfg_labels, $dm::isp_cfg_map{$isp});
+	mask_widget ($top->Frame, 0, \@pcfg_widgets, \@pcfg_types, \@pcfg_labels, $dm::isp_cfg_map{$isp});
 #exp#	$entries[0]->configure(-invcmd => 'bell', -vcmd => sub { 0; }, -validate => 'focusout');
 	my $frame1 = $top->Frame;
 	$frame1->Button(-text => 'Cancel', -command => sub{edit_bt_cancel($top)})->pack(-side => 'left');
-	$frame1->Button(-text => 'Apply', -command => sub{edit_bt_ok($top, $box, 0, \@entries)})->pack(-side => 'right');
+	$frame1->Button(-text => 'Apply', -command => sub{edit_bt_ok($top, $box, 0, \@pcfg_widgets)})->pack(-side => 'right');
 	$frame1->pack(-fill => 'x');
 	$top->pack(-expand => 1, -fill => 'both');
     }
@@ -1172,7 +1132,7 @@ sub cfg_editor_window( $$ ) {
     $save_bt->pack(-side => 'right');
     $exit_bt->pack(-side => 'left');
 
-    $box->Tk::bind ('<ButtonRelease>', sub { cfg_update_gadgets ($box->index('active'), \@entries) });
+    $box->Tk::bind ('<ButtonRelease>', sub { cfg_update_gadgets ($box->index('active'), \@pcfg_widgets) });
 }
 
 sub color_cfg_editor_window( $$ ) {
@@ -1181,9 +1141,9 @@ sub color_cfg_editor_window( $$ ) {
     $win->title("$APPNAME: Graph Colors");
 
     my @widgets;
-    my @types = ('color', 'color', 'color');
-    my @keys = ('Background Color', 'Ruler Color', 'Ruler2 Color');
-    my @cfg_keys = ('graph_bgcolor', 'graph_nrcolor', 'graph_ercolor');
+    my @types = ('color', 'color', 'color', 'text');
+    my @keys = ('Background Color', 'Ruler Color', 'Ruler2 Color', '(Language {de,en})');
+    my @cfg_keys = ('graph_bgcolor', 'graph_nrcolor', 'graph_ercolor', 'lang');
     my @vals;
     my @refs;
     my @defaults;
@@ -1212,7 +1172,12 @@ sub color_cfg_editor_window( $$ ) {
 			    }
 			}
 		    }
-		      $win->destroy ();
+		      if ($current_applang ne $cfg_gui{'lang'}) {
+			  $app_has_restarted=1;
+			  $main_widget->destroy;
+		      } else {
+			  $win->destroy ();
+		      }
 		    })->pack(-side => 'right');
     $frame1->Button(-text => 'Default',
 		    -command => sub
@@ -1235,26 +1200,68 @@ sub color_cfg_editor_window( $$ ) {
 }
 
 ########################################################################################
-sub read_config( $ ) {
-    my ($file) =@_;
+sub read_config_old( $$$ ) {
+    my ($file, $section, $cfg_hash) =@_;
+    my $config_tag=$$cfg_hash{'.config_tag'};
+    my $config_version=$$cfg_hash{'.config_version'};
+    my $cfg_default_hash=$$cfg_hash{'.config_default'};
+    my $result=0;
     if (open IN, ("$file")) {
 	while (<IN>) {
-	    if (/^\<([a-z]+) /) {
-		my $tag = $1; 
-		my @result;
-		while (m/\b([a-z_]+)\=["']([^\"\']*)['"]/g) {
-		    my ($key, $val) = ($1, dm::unescape_string ($2));
-		    if ($tag eq "gui") {
-			$cfg_gui{"$key"} = $val;
+	    if (m/^\<$section\s+version=[\"]([^\"]+)[\"]\s*\>/) {
+		my $current_version="$1";
+		while (<IN>) {
+		    last if (m/\<\/$section\s*\>/);
+		    next if ($current_version ne $config_version);
+		    if (/^\<$config_tag /) {
+			$result++;
+			while (m/\b([a-z_]+)\=["']([^\"\']*)['"]/g) {
+			    my ($key, $val) = ($1, dm::unescape_string ($2));
+			    $$cfg_hash{"$key"} = $val if defined $$cfg_default_hash{$key};
+			    db_trace("key=<$key> val=<$val>");
+			}
 		    }
 		}
 	    }
 	}
 	close IN;
-	1;
-    } else {
-	0;
-    }
+	$result } else { 0 }
+}
+sub read_config( $$$ ) {
+    my ($file, $section, $cfg_arg) =@_;
+    my $config_version=$$cfg_arg{'.config_version'};
+    my $result=0;
+
+    if (open IN, ("$file")) {
+	while (<IN>) {
+	    if (m/^\<$section\s+version=[\"]([^\"]+)[\"]\s*\>/) {
+		my $current_version="$1";
+		while (<IN>) {
+		    last if (m/\<\/$section\s*\>/);
+		    next if ($current_version ne $config_version);
+		    #-----------------------------
+		    if (/^\<([a-z\-_]+) /) {
+			my $config_tag=$1;
+			my $cfg_hash=$$cfg_arg{$config_tag};
+			my $cfg_default_hash=$$cfg_hash{'.config_default'};
+			$result++;
+			while (m/\b([a-z_]+)\=["']([^\"\']*)['"]/g) {
+			    my ($key, $val) = ($1, dm::unescape_string ($2));
+			    $$cfg_hash{"$key"} = $val if defined $$cfg_default_hash{$key};
+			    db_trace("key=<$key> val=<$val>");
+			}
+		    }
+		    #-------------------------------
+		}
+	    }
+	}
+	close IN;
+	$result } else { 0 }
+}
+
+sub restore_config () {
+    read_config ($cfg_file_usr, "tkdialup-config", \%cfg_tkdialup ) or
+	read_config ($cfg_file, "tkdialup-config", \%cfg_tkdialup);
 }
 
 sub write_config( $ ) {
@@ -1278,6 +1285,10 @@ sub write_config( $ ) {
     }
 }
 
+sub save_config () {
+  dm::write_config ($cfg_file_usr, "tkdialup-config", \%cfg_tkdialup);
+}
+
 sub read_locale( $ ) {
 # read in locale file (see ./locale-de for a german locale file)
     my $lang=shift;
@@ -1293,7 +1304,7 @@ sub read_locale( $ ) {
 		if (defined $LOC{$key}) {
 		    $LOC{$key}=dm::unescape_string($val);
 		} else {
-		    print STDERR "$progdir/locale-$applang:$line: Unknown configuration key <$1>\n";
+		    print STDERR "$progdir/locale-$lang:$line: Unknown configuration key <$1>\n";
 		}
 	    }
 	}
@@ -1301,9 +1312,106 @@ sub read_locale( $ ) {
     }
 }
 
+sub init_locale () {
+%LOC=
+(
+ 'language_name' => 'English',
+#---- File Menu
+ 'menu_file' => "File",
+ 'menu_file_hangup_now' => "Hangup now",
+ 'menu_file_hangup_now.help' => 'Disconnect immediatly by issuing "Down Cmd"',
+ 'menu_file_hangup_defer' => "Hangup later",
+ 'menu_file_hangup_defer.help' => 'Disconnect just before the current unit would end',
+ 'menu_file_save' => "Save Configuration",
+ 'menu_file_save.help' => 'Keep all configuration changes permanently',
+ 'menu_file_quit' => "Quit",
+ 'menu_file_quit.help' => 'Disconnect and terminate this "tkdialup" process immediatly.',
+#---- Edit Menu
+ 'menu_edit' => "Edit",
+ 'menu_edit_options' => "Options",
+ 'menu_edit_options.help' => 'Change Programm settings',
+ 'menu_edit_peer_options' => "Peer Options",
+ 'menu_edit_peer_options.help' => 'Run a configuration editor. Its not full implemented yet
+You can edit, apply and save  existing peer configurations like:
+dialup command, hangup command, label, color, rate-name, visibility
+
+You can show a rate but you cannot edit rates date.',
+ 'menu_edit_graph_options' => "Graph Options",
+ 'menu_edit_graph_options.help' => 'Edit  background and ruler colors of graph window',
+#---- View Menu
+ 'menu_view' => "View",
+ 'menu_view_graph' => "Graph",
+ 'menu_view_graph.help' => 'Show time/money graphs of all active peers',
+ 'menu_view_clock' => "Show clock",
+ 'menu_view_clock.help' => 'Show digital clock',
+ 'menu_view_progress_bar' => "Progress bar",
+ 'menu_view_progress_bar.help' => "Show progress bar to display cost unit",
+ 'menu_view_disconnect_button' => "Disconnect button",
+ 'menu_view_disconnect_button.help' => "Provide disconnect button",
+ 'menu_view_stat' => "Statistic ...",
+ 'menu_view_stat.help' => 'Show a time/money history list for this user',
+ 'button_main_hangup' => "Hangup",
+#---- Help Menu
+ 'menu_help' => "Help",
+ 'menu_help_about' => "About ...",
+ 'menu_help_about.help' => 'Show information about this program and its author',
+ 'menu_help_balloon_help' => "Mouse Pointer Help",
+ 'menu_help_balloon_help.help' => 'Toggle showing balloon help',
+#---- Rate Window
+ 'win_rate_date_start' => 'Start Date',
+ 'win_rate_date_start.help' => 'Date when this rate became vaild (may be empty if next field is empty too)',
+ 'win_rate_date_end' => 'End Date',
+ 'win_rate_date_end.help' => 'Date when this rate became or will become invalid',
+ 'win_rate_weekdays' => 'Weekdays',
+ 'win_rate_weekdays.help' => 'Set of numbers (0..6) representing weekdays (Sun..Sat)',
+ 'win_rate_daytime_start' => 'Start Time',
+ 'win_rate_daytime_start.help' => 'Daytime on which this rate becomes valid (may be empty if next field is empty too)',
+ 'win_rate_daytime_end' => 'End Time',
+ 'win_rate_daytime_end.help' => 'Daytime on which tis rate becomes invalid (must end before midnight!)',
+ 'win_rate_money_per_min' => 'M/min',
+ 'win_rate_money_per_min.help' => 'Payment in money per minute (not per unit!)', 
+ 'win_rate_secs_per_unit' => 'secs/unit',
+ 'win_rate_secs_per_unit.help' => 'Length of a unit in seconds',
+ 'win_rate_money_per_connect' => 'M/Conn.',
+ 'win_rate_money_per_connect.help' => 'Payment per connection (usually 0)',
+ 'win_rate_free_linkup' => 'FL',
+ 'win_rate_free_linkup.help' => 'Free DialUp (Paying starts not before PPP connection is up)',
+ 'win_rate_overlay_rate' => 'OR',
+ 'win_rate_overlay_rate.help' => 'Overlay Rate (this may be a additional payment with a different unit length)',
+#--- Main Window
+ 'win_main_start' => "Start",
+ 'win_main_start.help' => "Hit a Button to Connect a Peer",
+ 'win_main_money' => "Money",
+ 'win_main_money.help' => "Real Time Money Counter",
+ 'win_main_rate' => "Rate",
+ 'win_main_rate.help' => "Money per Minute",
+#---
+ );
+}
+
+
 
 ##--- Main
-read_locale ($applang);
-read_config((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file);
+@dm::commands_on_startup = ();
+@dm::commands_before_dialing = (\&clear_gui_counter, \&update_gui_dialing);
+@dm::commands_on_connect = (\&main_window_iconify, \&update_gui_online);
+@dm::commands_on_connect_failure = (\&update_gui_failure, \&clear_gui_counter);
+@dm::commands_on_disconnect = (\&main_window_deiconify, \&update_gui_offline, \&update_gui_counter, \&update_progress_bar);
+
+
+restore_config ();
+
+#read_config_old((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file);
+# ???-bw/31-Aug-00 Is it allowed to restart Tk?
+while ($app_has_restarted) {
+    $app_has_restarted=0;
+if ($current_applang ne $cfg_gui{'lang'}) {
+    $current_applang=$cfg_gui{'lang'};
+    init_locale ();
+    read_locale ($cfg_gui{'lang'});
+}
+#dm::write_config ("/home/bertw/.dialup_manager.cfg", "tkdialup-config", \%cfg_gui);
+#read_config ("/home/bertw/.dialup_manager.cfg", "tkdialup-config", \%cfg_gui) or die;
 make_gui_mainwindow();
 MainLoop;
+}
