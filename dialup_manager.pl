@@ -733,10 +733,15 @@ sub mask_field ($$$) {
     $entry;
 }
 
-sub mask_window ($$$$$$) {
-    my ($parent, $lb, $index, $isp, $pattern, $entries) = @_;
+# PARENT is the parent frame
+# LB is a listbox
+# INDEX is the 
+#
+#
+sub mask_window ($$$$$) {
+    my ($parent, $lb, $index, $isp, $entries) = @_;
     my $top=$parent->Frame;
-    my @labels = ('Name', 'Command', 'Tarif', 'Farbe', 'Label');
+    my @labels = ('Name', 'Command', 'Label', 'Farbe', 'Tarif');
 #    my @entries;
     my $isp_cfg = $isp_cfg_map{$isp};
     for (my $i=0; $i < $#labels+1; $i++) {
@@ -749,10 +754,109 @@ sub mask_window ($$$$$$) {
     $top;
 }
 
+sub edit_bt_ok($$$$) {
+    my ($frame, $lb, $index, $entries) = @_;
+}
+
+# TODO: TAB switching order
+sub bill_mask_window ($$$) {
+    my ($parent, $matrix, $entries) = @_;
+    my $labels=$$matrix[0];
+    my $fmts=$$matrix[1];
+    my ($rows, $cols) = ($#$matrix-1, $#$labels+1);
+    my $top = $parent->Frame;
+    my $table_frame = $top->Frame;
+    $table_frame->pack(-side => 'top');
+    for (my $c=0; $c < $cols; $c++) {
+	my @wids;
+	$table_frame->Label(-text => $$labels[$c])->grid(-row => 0, -column => $c);
+	for (my $r=2; $r < $rows+2; $r++) {
+	    if ($$fmts[$c] =~ /cstring:(\d+)/) {
+		my $width=$1;
+		my $wid = $table_frame->Entry(-width => $width);
+		my $col_matrix= $$matrix[$r];
+		$wid->insert(0, $$col_matrix[$c]);
+		$wid->grid(-row => $r, -column => $c);
+	    $wids[$#wids+1] = $wid;
+	    }
+	}
+	$$entries[$#$entries+1]=\@wids;
+    }
+    my $button_frame = $top->Frame;
+    $button_frame->pack(-side => 'bottom');
+    foreach my $lab (('Append Row', 'Insert Row', 'Remove Row')) {
+	my $wid = $button_frame->Button (-text => $lab);
+	$wid->pack (-side => 'left');
+    }
+    $top;
+}
+sub bill_mask_window_old ($$$) {
+    my ($parent, $matrix, $entries) = @_;
+    my $labels=$$matrix[0];
+    my $fmts=$$matrix[1];
+    my ($rows, $cols) = ($#$matrix-1, $#$labels+1);
+    my $top = $parent->Frame;
+    my $table_frame = $top->Frame;
+    $table_frame->pack(-side => 'top');
+    for (my $c=0; $c < $cols; $c++) {
+	my $frame=$table_frame->Frame;
+	my @wids;
+	$frame->Label(-text => $$labels[$c])->pack(-side => 'top');
+	for (my $r=2; $r < $rows+2; $r++) {
+	    if ($$fmts[$c] =~ /cstring:(\d+)/) {
+		my $width=$1;
+		my $wid = $frame->Entry(-width => $width);
+		my $col_matrix= $$matrix[$r];
+		$wid->insert(0, $$col_matrix[$c]);
+		$wid->pack(-side => 'bottom',
+			   -expand => 1,
+			   -fill => 'x');
+	    $wids[$#wids+1] = $wid;
+	    }
+	}
+	$frame->pack(-expand => 1, -fill => 'x', -side => 'left');
+	$$entries[$#$entries+1]=\@wids;
+    }
+    my $button_frame = $top->Frame;
+    $button_frame->pack(-side => 'bottom');
+    foreach my $lab (('Append Row', 'Insert Row', 'Remove Row')) {
+	my $wid = $button_frame->Button (-text => $lab);
+	$wid->pack (-side => 'left');
+    }
+    $top;
+}
+sub bill_mask_data ($) {
+    my ($rate_name) = @_;
+    my @labels = ('Start Datum', 'End Datum', 'Wochentage', 'Start Zeit',
+		  'End Zeit', 'Pfg/min', 'sec/Takt', 'Pfg/Einw.',);
+    my @matrix;
+
+    $matrix[$#matrix+1] = \@labels;
+    $matrix[$#matrix+1] = ['cstring:10','cstring:10','cstring:10','cstring:10',
+			   'cstring:10','cstring:5','cstring:4','cstring:4',];
+    my $rate = Dialup_Cost::get_rate ($rate_name);
+    foreach my $r (@$rate) {
+	my @sub_entries;
+	$sub_entries[0] = "";
+	$sub_entries[1] = "";
+	$sub_entries[2] = "";
+	$sub_entries[3] = "";
+	$sub_entries[4] = "";
+	my $r1 = $$r[1];
+	$sub_entries[5] = ($$r1[0] * 60) / $$r1[1];
+	$sub_entries[6] = $$r1[1];
+	$sub_entries[7] = $$r1[3];
+	$matrix[$#matrix+1]=\@sub_entries;
+    }
+    \@matrix;
+}
+
 sub item_edit_bt($$) {
     my ($lb, $index) = @_;
     my @entries;
-    mask_window ($main_widget->Toplevel, $lb, $index, $lb->get($index), "", \@entries)->pack();
+
+    bill_mask_window ($main_widget->Toplevel, bill_mask_data (get_isp_tarif ($lb->get($index))), \@entries)->pack();
+#    mask_window ($main_widget->Toplevel, $lb, $index, $lb->get($index), \@entries)->pack();
 };
 my @cfg_isp_cfg_map;
 sub cfg_update_entries ($$) {
@@ -810,7 +914,7 @@ sub cfg_editor_window ($$) {
 #$item_entry->pack(-fill => 'x');
 
     my @entries;
-    mask_window ($win, $box, 0, $box->get(0), "", \@entries)->pack();
+    mask_window ($win, $box, 0, $box->get(0), \@entries)->pack();
 
     $frame3->pack(-fill => 'x');
 #$view_bt->pack(-side => 'bottom');
@@ -831,3 +935,4 @@ Dialup_Cost::read_data($cost_file);
 
 make_gui_mainwindow();
 MainLoop;
+#write_config("/tmp/dialup_manager.cfg");
