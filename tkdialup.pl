@@ -1,5 +1,5 @@
 #! /usr/local/bin/perl -w
-## $Id: tkdialup.pl,v 1.7 2000/09/10 06:21:16 bertw Exp bertw $
+## $Id: tkdialup.pl,v 1.8 2000/09/10 06:50:11 bertw Exp bertw $
 
 use strict;
 use dm;
@@ -759,14 +759,6 @@ sub mask_widget( $$$$$$ ) {
 	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1);
 	    $entry->insert(0, $val);
 	    $$widgets[$i] = $entry;
-
-=pod
-	    my $b = $mask_frame->BrowseEntry(-label => "Label", -choices => Dialup_Cost::get_rate_names());
-	    $b->grid(-row => $row, -column => 1);
-	    $$widgets[$i] = $b;
-=cut
-
-
 
 	    $mask_frame->Optionmenu(-options => Dialup_Cost::get_rate_names(),
 				    -command => sub { 
