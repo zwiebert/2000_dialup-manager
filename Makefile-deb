@@ -1,0 +1,28 @@
+prefix:=/usr/local/
+apphome=/usr/local/share/dialup_manager
+bindir=$(prefix)bin
+
+
+all:  dist.deb
+
+force:
+
+distclean: force
+	rm -rf ./dist
+
+dist/DEBIAN/postinst dist/DEBIAN/control: force
+	mkdir -p dist/DEBIAN dist$(prefix)/bin
+	echo "#! /bin/sh" > dist/DEBIAN/postinst
+	echo "chmod 04755 $(apphome)/status_reader.pl" >> dist/DEBIAN/postinst
+	echo "chown root.root $(apphome)/status_reader.pl" >> dist/DEBIAN/postinst
+	chmod 755 dist/DEBIAN/postinst
+	install ./packages/debian/control ./dist/DEBIAN/control
+
+tkdialup: tkdialup.in force
+	sed -e "s+@APP_HOME@+$(apphome)+g" tkdialup.in >tkdialup && chmod 755 tkdialup
+
+
+dist.deb: distclean dist/DEBIAN/postinst tkdialup force
+	$(MAKE) root=dist/ install
+	$(MAKE) tkdialup && install tkdialup dist$(bindir)
+	dpkg-deb --build dist
