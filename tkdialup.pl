@@ -1,5 +1,5 @@
 #! /usr/local/bin/perl -w
-## $Id: tkdialup.pl,v 1.6 2000/09/10 06:12:48 bertw Exp bertw $
+## $Id: tkdialup.pl,v 1.7 2000/09/10 06:21:16 bertw Exp bertw $
 
 use strict;
 use dm;
@@ -1748,19 +1748,20 @@ You can examine a rate but you cannot edit a rate yet.',
 @dm::commands_on_connect_failure = (\&update_gui_failure, \&clear_gui_counter);
 @dm::commands_on_disconnect = (\&main_window_deiconify, \&update_gui_offline, \&update_gui_counter, \&update_progress_bar);
 
+$dm::time_correction_offset = $ENV{"TKD_TIME_OFFSET"} if defined $ENV{"TKD_TIME_OFFSET"}; # MS-Windows9x
 
 restore_config ();
 
 #read_config_old((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file);
 # ???-bw/31-Aug-00 Is it allowed to restart Tk?
 while ($app_has_restarted) {
-    $app_has_restarted=0;
-if ($current_applang ne $cfg_gui{'lang'}) {
+  $app_has_restarted=0;
+  if ($current_applang ne $cfg_gui{'lang'}) {
     $current_applang=$cfg_gui{'lang'};
     init_locale ();
     read_locale ($cfg_gui{'lang'});
-}
+  }
 
-make_gui_mainwindow();
-MainLoop;
+  make_gui_mainwindow();
+  MainLoop;
 }
