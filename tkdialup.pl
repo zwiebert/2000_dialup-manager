@@ -1,7 +1,12 @@
 #! /usr/local/bin/perl -w
+## $Id$
 
 use strict;
 use dm;
+use Tk;
+use Tk::ROText;
+use Tk::ProgressBar;
+use Tk::Balloon;
 
 die unless defined $dm::state;
 
@@ -29,9 +34,6 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
 
 # Debug Aids
 my $db_tracing = defined ($ENV{'DB_TRACING'});
-sub db_trace ( $ ) {
-    printf STDERR "trace %s\n", $_[0] if $db_tracing;
-}
 
 #### Locale ####
 # Locale Defaults (English)
@@ -104,39 +106,11 @@ $LOC{'win_main_rate'}="Rate";
 $LOC{'win_main_rate.help'}="Money per Minute";
 #---
 
-# read in locale file (see ./locale-de for a german locale file)
-if (open (LOC, "$progdir/locale-$applang")) {
-    my $line=0;
-    while (<LOC>) {
-	++$line;
-	if (/^wday_names\s*=\s*(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+$/) {
-	    @wday_names=($1, $2, $3, $4, $5, $6, $7); 
-	} elsif (/^([a-z_.]+)\s*=\s*(.+)\s*$/) {
-	    my $key=$1;
-	    my $val=$2;
-	    if (defined $LOC{$key}) {
-		$LOC{$key}=dm::unescape_string($val);
-	    } else {
-		print STDERR "$progdir/locale-$applang:$line: Unknown configuration key <$1>\n";
-	    }
-	}
-    }
-    close LOC;
-}
-
-
-## Tk-GUI
-use strict;
-use Tk;
-use Tk::ROText;
-use Tk::ProgressBar;
-use Tk::Balloon;
-
 ##--- Protos
- sub db_trace ( $ );
- sub set_color_entry ($$);
- sub get_color_entry ( $ );
- sub update_gui_dial_state ( $ );
+ sub db_trace( $ );
+ sub set_color_entry( $$ );
+ sub get_color_entry( $ );
+ sub update_gui_dial_state( $ );
  sub update_gui_failure ();
  sub update_gui_offline ();
  sub update_gui_online ();
@@ -144,32 +118,35 @@ use Tk::Balloon;
  sub update_progress_bar ();
  sub clear_gui_counter ();
  sub update_gui_counter ();
- sub update_gui_pfg_per_minute ( $ );
+ sub update_gui_pfg_per_minute( $ );
  sub update_gui_rtc ();
  sub rtc_max_width ();
  sub update_gui ();
  sub cb_dialup ( $ );
  sub cb_disconnect ();
- sub make_diagram ( $$$$ );
- sub make_gui_graphwindow ( $$ );
+ sub make_diagram( $$$$ );
+ sub make_gui_graphwindow( $$ );
  sub make_gui_aboutwindow ();
  sub make_gui_statwindow ();
  sub make_gui_mainwindow ();
  sub main_window_iconify ();
  sub main_window_deiconify ();
- sub mask_widget ($$$$$$);
- sub edit_bt_ok($$$$);
- sub cost_mask_window ($$$$);
- sub cost_mask_window_old ($$$);
- sub cost_mask_data ($);
- sub parse_cost_mask_data ($);
- sub item_edit_bt($$);
- sub cfg_update_gadgets ($$);
- sub cfg_editor_window ($$);
- sub color_cfg_editor_window ($$);
- sub read_config ($);
- sub write_config ($);
+ sub mask_widget( $$$$$$ );
+ sub edit_bt_ok( $$$$ );
+ sub cost_mask_window( $$$$ );
+ sub cost_mask_window_old( $$$ );
+ sub cost_mask_data( $ );
+ sub parse_cost_mask_data( $ );
+ sub item_edit_bt( $$ );
+ sub cfg_update_gadgets( $$ );
+ sub cfg_editor_window( $$ );
+ sub color_cfg_editor_window( $$ );
+ sub read_config( $ );
+ sub write_config( $ );
+ sub read_locale( $ );
 ##---
+
+sub db_trace ( $ ) { printf STDERR "trace %s\n", $_[0] if $db_tracing }
 
 my %cfg_gui_default= (balloon_help => '1', show_rtc => '1', show_progress_bar => '1',
 		      graph_bgcolor => 'Grey85', graph_nrcolor => 'Grey70', graph_ercolor => 'Grey55');
@@ -188,16 +165,16 @@ my @cfg_labels = ('Name', 'Up Cmd', 'Down Cmd', 'Label', 'Farbe', 'Tarif', 'Visi
 my @cfg_types =  ('text', 'text',   'text',      'text', 'color', 'text',  'flag');
 
 
-sub set_color_entry ($$) {
+sub set_color_entry( $$ ) {
     my ($entry, $color) = @_;
     $entry->configure(-foreground => $color, -background => $cfg_gui{'graph_bgcolor'});
 }
-sub get_color_entry ( $ ) {
+sub get_color_entry( $ ) {
     my ($entry) = @_;
     $entry->cget('-foreground');
 }
 
-sub update_gui_dial_state ( $ ) {
+sub update_gui_dial_state( $ ) {
     my ($color) = @_;
     foreach my $isp (@dm::isps) {
 	next unless (dm::get_isp_flag_active ($isp));
@@ -343,7 +320,7 @@ sub cb_disconnect () {
 }
 
 ## display time/money graphs
-sub make_diagram ( $$$$ ) {
+sub make_diagram( $$$$ ) {
     my ($win, $canvas, $xmax, $ymax) = @_;
     my ($width, $height) = ($canvas->width - 60, $canvas->height - 60);
     my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
@@ -503,7 +480,7 @@ sub make_diagram ( $$$$ ) {
     }
 }
 
-sub make_gui_graphwindow ( $$ ) {
+sub make_gui_graphwindow( $$ ) {
     my ($xmax, $ymax) = @_; #(30 * $secs_per_min, 200);
     my ($width, $height) = (500, 350);
     my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
@@ -768,7 +745,8 @@ sub make_gui_mainwindow () {
     if ($dm::state == $dm::state_startup) {
 	dm::state_trans_startup_to_offline ();
    }
-    if ($dm::db_ready) {
+    # debug aid
+    if (0) {
 	state_trans_offline_to_dialing ();
 #	state_trans_dialing_to_online ();
     }
@@ -813,7 +791,7 @@ mask_widget() - produce pairs of key/value-widgets
 
 =cut
 
-sub mask_widget ($$$$$$) {
+sub mask_widget( $$$$$$ ) {
     my ($mask_frame, $row, $widgets, $types, $keys, $vals) = @_;
     for my $i (0..$#$keys) {
 	my ($key, $val) = ($$keys[$i], $$vals[$i]);
@@ -872,7 +850,7 @@ sub mask_widget ($$$$$$) {
 }
 
 my @cfg__isp_cfg_cache;
-sub edit_bt_ok($$$$) {
+sub edit_bt_ok( $$$$ ) {
     my ($frame, $lb, $index, $widgets) = @_;
     my @config_values;
 
@@ -904,7 +882,7 @@ sub edit_bt_ok($$$$) {
 }
 
 # TODO: TAB switching order
-sub cost_mask_window ($$$$) {
+sub cost_mask_window( $$$$ ) {
     my ($parent, $matrix, $entries, $balloon) = @_;
     my $labels=$$matrix[0];
     my $balloons=$$matrix[2];
@@ -951,7 +929,7 @@ sub cost_mask_window ($$$$) {
     }
     $top;
 }
-sub cost_mask_window_old ($$$) {
+sub cost_mask_window_old( $$$ ) {
     my ($parent, $matrix, $entries) = @_;
     my $labels=$$matrix[0];
     my $fmts=$$matrix[1];
@@ -988,7 +966,7 @@ sub cost_mask_window_old ($$$) {
 }
 ## create data table for cost preferece window (cost_mask_window())
 ## 1st row are labels.  2nd row are data-type-IDs.  In 3rd row starts data.
-sub cost_mask_data ($) {
+sub cost_mask_data( $ ) {
     my ($rate_name) = @_;
     my @labels = ($LOC{'win_rate_date_start'},
 		  $LOC{'win_rate_date_end'},
@@ -1051,7 +1029,7 @@ sub cost_mask_data ($) {
     \@matrix;
 }
 
-sub parse_cost_mask_data ($) {
+sub parse_cost_mask_data( $ ) {
     my ($matrix) = @_;
     my @result;
     my $row_idx=-3;
@@ -1097,7 +1075,7 @@ sub parse_cost_mask_data ($) {
 }
 
 
-sub item_edit_bt($$) {
+sub item_edit_bt( $$ ) {
     my ($lb, $index) = @_;
     my @entries;
 
@@ -1109,7 +1087,7 @@ sub item_edit_bt($$) {
     cost_mask_window ($win, cost_mask_data ($isp_rate), \@entries, $balloon)->pack();
 };
 
-sub cfg_update_gadgets ($$) {
+sub cfg_update_gadgets( $$ ) {
     my ($idx, $gadgets) = @_;
     my $cfg = $cfg__isp_cfg_cache[$idx];
     for (my $i=0; $i < $dm::cfg_SIZE; $i++) {
@@ -1127,7 +1105,7 @@ sub cfg_update_gadgets ($$) {
     }
 }
 
-sub cfg_editor_window ($$) {
+sub cfg_editor_window( $$ ) {
     my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
     my $win=$main_widget->Toplevel;
     $win->title("$APPNAME: Config");
@@ -1197,8 +1175,8 @@ sub cfg_editor_window ($$) {
     $box->Tk::bind ('<ButtonRelease>', sub { cfg_update_gadgets ($box->index('active'), \@entries) });
 }
 
-sub color_cfg_editor_window ($$) {
-    my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
+sub color_cfg_editor_window( $$ ) {
+    my ($xmax, $ymax) = @_;
     my $win=$main_widget->Toplevel;
     $win->title("$APPNAME: Graph Colors");
 
@@ -1257,7 +1235,7 @@ sub color_cfg_editor_window ($$) {
 }
 
 ########################################################################################
-sub read_config ($) {
+sub read_config( $ ) {
     my ($file) =@_;
     if (open IN, ("$file")) {
 	while (<IN>) {
@@ -1279,7 +1257,7 @@ sub read_config ($) {
     }
 }
 
-sub write_config ($) {
+sub write_config( $ ) {
     my ($file) =@_;
     if (open OUT, (">$file")) {
 	my $line="";
@@ -1300,8 +1278,32 @@ sub write_config ($) {
     }
 }
 
+sub read_locale( $ ) {
+# read in locale file (see ./locale-de for a german locale file)
+    my $lang=shift;
+    if (open (LOC, "$progdir/locale-$lang")) {
+	my $line=0;
+	while (<LOC>) {
+	    ++$line;
+	    if (/^wday_names\s*=\s*(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+$/) {
+		@wday_names=($1, $2, $3, $4, $5, $6, $7); 
+	    } elsif (/^([a-z_.]+)\s*=\s*(.+)\s*$/) {
+		my $key=$1;
+		my $val=$2;
+		if (defined $LOC{$key}) {
+		    $LOC{$key}=dm::unescape_string($val);
+		} else {
+		    print STDERR "$progdir/locale-$applang:$line: Unknown configuration key <$1>\n";
+		}
+	    }
+	}
+	close LOC;
+    }
+}
+
 
 ##--- Main
+read_locale ($applang);
 read_config((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file);
 make_gui_mainwindow();
 MainLoop;
