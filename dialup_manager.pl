@@ -7,12 +7,20 @@ my $isp_curr= defined $ARGV[0] ? $ARGV[0] : '';
 use strict;
 use Time::Local;
 
+sub tarif ( $$ );
+sub calc_price ( $$$ );
+sub init ();
+sub cb_disconnect ();
+sub online ();
+sub check_online ();
+sub update_sum ();
+
 #-- begin library
 my %month_map=(Jan => 0, Feb => 1, Mar => 2, Apr => 3, May => 4, Jun => 5,
 	       Jul => 6, Aug => 7, Sep => 8, Oct => 9, Nov => 10, Dec => 11);
 
 
-sub parsetime ($) {
+sub parsetime ( $ ) {
     my $time=shift;
     my @result;
     if ($time=~/^([A-Z][a-z][a-z]) ([A-Z][a-z][a-z])  ?([0-3]?[0-9])  ?([0-6]?[0-9]):([0-6]?[0-9]):([0-6]?[0-9]).*(\d{4})/) {
@@ -30,7 +38,7 @@ my ($sw_sel530_knuut, $start_sel530_knuut) = (0, timelocal(0, 0, 0, 8, $month_ma
 my ($sw_knuut_mci2, $start_knuut_mci2) = (0, timelocal(0, 0, 0, 1, $month_map{'Nov'}, 1999));
 my ($sw_knuut_08002, $start_knuut_08002) = (0, timelocal(0, 0, 0, 1, $month_map{'Nov'}, 1999));
 
-sub tarif ($$) {
+sub tarif ( $$ ) {
     my ($isp, $date_arg) = @_;
     my $pfg=0;
     my $takt=1;			# 
@@ -125,6 +133,16 @@ sub calc_price ( $$$ ) {
     $result +=  $tar[4] * ($duration / $tar[5]);
     $result;
 }
+
+sub calc_real_price ( $$$ ) {
+    my ($isp, $start_time, $duration) = @_;
+    my @tar = tarif ($isp, $start_time);
+    my $units; { use integer;  $units=($duration + $tar[2] +  $tar[1]) / $tar[1]; } # telco units in seconds
+    my $result = $tar[0] * $units + $tar[3]; # telco
+    $result +=  $tar[4] * ($duration / $tar[5]); # isp
+    $result;
+}
+
 #- end library
 
 my $flag_online = 0;
@@ -198,6 +216,15 @@ sub update_sum () {
 
 ## Tk-GUI
 use Tk;
+
+sub update_gui_offline ();
+sub update_gui_online ();
+sub update_gui ();
+sub cb_disconnect ();
+sub cb_dialup2 ( $ );
+sub cb_dialup ( $ );
+sub make_gui_mainwindow ();
+
 my $main;
 my @entries;
 my %labels;
@@ -205,6 +232,8 @@ my $disconnect_button;
 
 my %widgets;
 my ($offs_record, $offs_isp_widget, $offs_sum_widget, $offs_min_price_widget) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+
+
 
 
 sub update_gui_offline () {
@@ -290,6 +319,8 @@ my %isp_cmd_map = (KNUUT => 'connect-isp-030.pl', KNUUT_MCI =>  'connect-isp.pl'
 		   NIKOMA => 'connect-isp-nikoma.pl', NGI => 'connect-isp-ngi.pl', NGI_SH => 'connect-isp-ngi-sh.pl');
 my %isp_label_map = (KNUUT => 'Knuut-030', KNUUT_MCI =>  'Knuut-MCI',  KNUUT_0800 => 'Knuut-0800',
 		     NIKOMA => 'NIKOMA', NGI => 'NGI', NGI_SH => 'NGI Short');
+my %isp_color_map = (KNUUT => 'Red', KNUUT_MCI =>  'Blue',  KNUUT_0800 => 'Goldenrod',
+		     NIKOMA => 'Purple', NGI => 'DarkGreen', NGI_SH => 'DarkGreen');
 sub cb_dialup2 ( $ ) {
     my ($isp) = @_;
     my $cmd = "/root/bin/pc/" . $ENV{'USER'} . "/" . $isp_cmd_map{$isp} . '&';
@@ -306,7 +337,59 @@ sub cb_dialup ( $ ) {
     cb_dialup2 ($isp);
 }
 
-sub make_gui () {
+sub make_gui_graphwindow () {
+    my ($width, $height) = (500, 400);
+    my ($xmax, $ymax) = (60 * 30, 200);
+    my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
+    my ($xoffs, $yoffs) = (20, -20);
+    my $win=$main->Toplevel;
+    my $canvas=$win->Canvas(-width => $width + 40, -height => $height + 40, -background => 'Grey95');
+    $canvas->pack();
+
+
+    {
+	my $field_width = $width / ($#isps+1);
+	my $x = $xoffs + $field_width / 2;
+	foreach my $isp (@isps) {
+	    $canvas->createText($x, 10,
+				-width => $field_width,
+				-text => $isp_label_map{$isp},
+				-fill => $isp_color_map{$isp});
+	    $x += $field_width;
+	}
+    }
+
+    for (my $i=0; $i <= $xmax; $i+=60) {
+	my $x = $i * $xscale + $xoffs;
+	$canvas->createLine($x, -$yoffs, $x, -$yoffs + $height,
+			    -fill => ($i%300) ? 'Grey80' : 'Grey65');
+	if (($i%300) == 0) {
+	    $canvas->createText($x, $height - $yoffs + 10,
+				-text => sprintf ("%u",  $i / 60));
+	}
+    }
+
+    for (my $i=0; $i <= $ymax; $i+=10) {
+	my $y = -($i * $yscale + $yoffs - $height);
+	$canvas->createLine($xoffs, $y, $width + $xoffs,  $y,
+			    -fill => ($i%50) ? 'Grey80' : 'Grey65');
+	if (($i%50) == 0) {
+	    $canvas->createText(10, $y, -text => sprintf ("%0.1f", $i / 100));
+	}
+    }
+
+    foreach my $isp (@isps) {
+	for (my ($secs, $step)=(0, 10); $secs < $xmax; $secs+=$step) {
+	    my $x=$secs * $xscale +$xoffs;
+	    my $y= -(calc_real_price($isp, time(), $secs) * $yscale - $height + $yoffs);
+	    my $x2=($secs+$step) * $xscale + $xoffs;
+	    my $y2= -(calc_real_price($isp, time(), $secs+$step) * $yscale - $height + $yoffs);
+	    $canvas->createLine($x, $y, $x2, $y2, -fill => $isp_color_map{$isp});
+	}
+    }
+}
+
+sub make_gui_mainwindow () {
     $main = MainWindow->new;
     $main->appname('dialupManager');
     foreach my $isp (@isps) {
@@ -329,11 +412,18 @@ sub make_gui () {
 	$labels{$isp} = $label;
 	$widgets{$isp} = [0, $label, $text, $min_price];
     }
-    my $button = $main->Button(-text => 'Trennen', -command => sub{cb_disconnect});
-    $button->pack(-expand => 1, -fill => 'x');
-    $disconnect_button=$button;
+    {
+	my $frame = $main->Frame;
+	my $b1 = $frame->Button(-text => 'Trennen', -command => sub{cb_disconnect});
+	my $b2 = $frame->Button(-text => 'Graph', -command => sub{make_gui_graphwindow()});
+	$b1->pack(-expand => 1, -fill => 'x', -side => 'left');
+	$b2->pack(-expand => 1, -fill => 'x',  -side => 'left');
+	$frame->pack(-expand => 1, -fill => 'x');
+	$disconnect_button=$b1;
+    }
     $main->repeat (1000, sub{update_gui()});
 }
 
-make_gui();
+make_gui_mainwindow();
+#make_gui_graphwindow();
 MainLoop ;
