@@ -1,5 +1,5 @@
 #! /usr/local/bin/perl -w
-## $Id: tkdialup.pl,v 1.5 2000/09/04 16:42:04 bertw Exp bertw $
+## $Id: tkdialup.pl,v 1.6 2000/09/10 06:12:48 bertw Exp bertw $
 
 use strict;
 use dm;
@@ -49,6 +49,7 @@ my $rcfg_current_col=0;
 ## ======================= Misc ========================================
 my $db_tracing = defined ($ENV{'DB_TRACING'}); # debug aid
 my $app_has_restarted=1; # force reinit
+my $color_entry_bg="Grey";      # bg color for Entry widget (depends on OS)
 # constants
 my $days_per_week = 7;
 my $hours_per_day = 24;
@@ -129,7 +130,7 @@ sub update_gui_failure () {
 }
 
 sub update_gui_offline () {
-    update_gui_dial_state ('Grey');
+    update_gui_dial_state ('#708dad');
 }
 
 sub update_gui_online () {
@@ -155,7 +156,7 @@ sub clear_gui_counter () {
     while (my ($isp, $wid) = each (%widgets)) {
 	my $entry=$$wid[$offs_sum_widget];
 	$entry->delete ('1.0', 'end');
-	$entry->configure (-background => $entry->parent->cget('-background'));
+	$entry->configure (-background => $color_entry_bg);
 
 # FIXME: move the following
 	if ($dm::state == $dm::state_dialing and $isp eq $dm::isp_curr) {
@@ -187,7 +188,7 @@ sub update_gui_counter () {
 	my $bg_color = (($cheapest == $price) ? 'Green'
 			: (($most_expensive == $price) ? 'OrangeRed'
 #			   : 'Yellow'));
-			   : $widget->parent->cget('-background')));
+			   : $color_entry_bg));
 	$widget->configure (-background => $bg_color);
     }
 }
@@ -211,19 +212,19 @@ sub update_gui_money_per_minute ( $ ) {
 	my $bg_color = (($cheapest == $price) ? 'LightGreen'
 			: (($most_expensive == $price) ? 'Salmon'
 #			   : 'LightYellow'));
-			   : $widget->parent->cget('-background')));
+			   : $color_entry_bg));
 	$widget->configure (-background => $bg_color);
     }
 }
 
 sub update_gui_rtc () {
     $rtc_widget->delete ('1.0', 'end');
-    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime (time ());
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime (dm::db_time ());
     $rtc_widget->insert('1.0', sprintf (" %s  %u-%02u-%02u  %02u:%02u:%02u",
 					$wday_names[$wday],
 					$year + 1900, $mon + 1, $mday,
 					$hour, $min, $sec,
-					)); 
+					));
 }
 sub rtc_max_width () {
     my $max_wday_len=0;
@@ -453,7 +454,7 @@ sub make_gui_aboutwindow () {
 
 ## display money and time statisctics from user owned logfile
 sub make_gui_statwindow () {
-    make_gui_textwindow ("perl $progdir/stat_new.pl < $dm::cost_out_file |",  "$APPNAME: Stat");
+    make_gui_textwindow ("perl $progdir/stat_new.pl $dm::cost_out_file |",  "$APPNAME: Stat");
 }
 
 ## display FILE in window with title TITLE
@@ -608,6 +609,7 @@ sub make_gui_mainwindow () {
 
     $rtc_frame->pack(-expand => 1, -fill => 'both' );
     $rtc_widget->pack(-expand => 1, -fill => 'x') if $cfg_gui{'show_rtc'};
+    $color_entry_bg = $rtc_widget->cget('-bg');
 
     #### Controls ####
 	my $button_frame = $top->Frame;
@@ -634,7 +636,6 @@ sub make_gui_mainwindow () {
 				       -command => sub{ dm::dialup ($isp) } );
 	    my $money_counter = $frame->ROText(-height => 1, -width => 10, -takefocus => 0, -insertofftime => 0);
 	    my $money_per_minute = $frame->ROText(-height => 1, -width => 5, -takefocus => 0, -insertofftime => 0);
-
 	    $cmd_button->configure(-background => 'Cyan') if ($isp eq $dm::isp_curr);
 
 	    if ($usepack) {
