@@ -1,14 +1,19 @@
-#! /usr/local/bin/perl -w
-## $Id: tkdialup.pl,v 1.8 2000/09/10 06:50:11 bertw Exp bertw $
+#! /usr/bin/perl -w
+## $Id: tkdialup.pl,v 1.9 2000/09/10 06:50:46 bertw Exp bertw $
+
+BEGIN {
+  $ENV{'HOME'} = '' unless defined $ENV{'HOME'}; # windows default (current volume root)
+}
 
 use strict;
+use locale;
+use POSIX qw(locale_h);
 use dm;
+use log_stat;
 use Tk;
 use Tk::ROText;
 use Tk::ProgressBar;
 use Tk::Balloon;
-
-die unless defined $dm::state;
 
 my $APPNAME="tkdialup";
 $0 =~ m!^(.*)/([^/]*)$! or die "path of program file required (e.g. ./$0)";
@@ -19,17 +24,31 @@ my %cfg_gui_default= ('.config_tag' => 'gui',
 		      balloon_help => '1', show_rtc => '1', show_progress_bar => '1',
 		      show_disconnect_button => '1',
 		      graph_bgcolor => 'Grey85', graph_nrcolor => 'Grey70', graph_ercolor => 'Grey55',
-		      lang => 'de');
+		      country => '.automatic',
+		      rtc_strftime_fmt => ' %a %Y-%m-%d %H:%M:%S ',
+	#	      rtc_strftime_fmt => '%c',
+		      lang => '.automatic');
 my %cfg_gui = %cfg_gui_default;
 $cfg_gui{'.config_default'}=\%cfg_gui_default;
-my %cfg_tkdialup= ('.config_version' => '1.0', $cfg_gui{'.config_tag'} => \%cfg_gui);
+my %cfg_tkdialup= ('.config_version' => '1.0',
+		   $cfg_gui{'.config_tag'} => \%cfg_gui,
+		   $dm::cfg_sock{'.config_tag'} => \%dm::cfg_sock,
+		  );
 my $cfg_file="${progdir}/dialup_manager.cfg";
 my $cfg_file_usr=$ENV{"HOME"} . "/.dialup_manager.cfg";
 ## ======================= Locale ==================================
 my $lang_has_changed=1;  # force reinit
 my $current_applang="";
+my $current_appcountry="";
 my @wday_names;
 my %LOC;
+my %langs=('.automatic' => 'Automatic');
+my %countries=('.automatic' => 'Automatic');
+my $lang_menu_variable;
+my $country_menu_variable;
+my $env_locale;
+$env_locale=setlocale(&POSIX::LC_ALL) if defined &POSIX::setlocale;
+$env_locale=$ENV{'LANG'} if (not defined $env_locale and defined $ENV{'LANG'});
 ## ========================== Main Window ===========================
 my $main_widget;
 my %widgets;
@@ -40,8 +59,9 @@ my $pb_widget;
 my ($offs_record, $offs_isp_widget, $offs_sum_widget, $offs_money_per_minute_widget) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
 ## ============= Peer Config Editor Window (pcfg) =============================
 my @pcfg_widgets;
-my @pcfg_labels = ('Name', 'Up Cmd', 'Down Cmd', 'Label', 'Color', 'Rate', 'Visible');
-my @pcfg_types =  ('text', 'text',   'text',      'text', 'color', 'text',  'flag');
+my @pcfg_labels;
+my @pcfg_types;
+my @pcfg_label_help;
 ## ============= Rate Config Editor Window (rcfg) =============================
 my @rcfg_widgets;
 my $rcfg_current_row=0;
@@ -84,7 +104,7 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub make_gui_mainwindow ();
  sub main_window_iconify ();
  sub main_window_deiconify ();
- sub mask_widget( $$$$$$ );
+ sub mask_widget( $$$$$$$$ );
  sub pcfg_apply( $$$$ );
  sub rcfg_make_window( $$$$$ );
  sub rcfg_update_matrix( $$ );
@@ -97,7 +117,7 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub read_config( $$$ );
  sub write_config( $ );
  sub save_config();
- sub read_locale( $ );
+ sub read_locale( $$ );
 ##---
 
 
@@ -219,20 +239,29 @@ sub update_gui_money_per_minute ( $ ) {
 
 sub update_gui_rtc () {
     $rtc_widget->delete ('1.0', 'end');
+    my $rtc;
+  if (!defined &POSIX::strftime) {
     my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime (dm::db_time ());
-    $rtc_widget->insert('1.0', sprintf (" %s  %u-%02u-%02u  %02u:%02u:%02u",
-					$wday_names[$wday],
-					$year + 1900, $mon + 1, $mday,
-					$hour, $min, $sec,
-					));
+    $rtc = sprintf (" %s  %u-%02u-%02u  %02u:%02u:%02u",
+		    $wday_names[$wday],
+		    $year + 1900, $mon + 1, $mday,
+		    $hour, $min, $sec);
+  } else {
+    $rtc = POSIX::strftime ($cfg_gui{'rtc_strftime_fmt'}, localtime (dm::db_time ()));
+  }
+    $rtc_widget->insert('1.0', $rtc);
 }
 sub rtc_max_width () {
+  if (!defined &POSIX::strftime) {
     my $max_wday_len=0;
     my $rtc_time_len=24;
     foreach my $wday (@wday_names) {
 	if ((my $len = length ($wday)) > $max_wday_len) { $max_wday_len = $len; }
     }
     $max_wday_len + $rtc_time_len;
+    } else {
+      length (POSIX::strftime ($cfg_gui{'rtc_strftime_fmt'}, localtime (dm::db_time ())));
+    }
 }
 
 sub update_gui () {
@@ -279,7 +308,8 @@ sub make_diagram( $$$$ ) {
 	$canvas->createLine($xoffs, $y, $width + $xoffs,  $y,
 			    -fill => ($i%50) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
 	if (($i%50) == 0) {
-	    $canvas->createText(10, $y, -text => sprintf ("%0.1f", $i / 100));
+	  $y=sprintf("%.0f", $y); # canvas->createText is buggy when using a locale with "," as decimal point
+	  $canvas->createText(10, $y, -text => sprintf ("%0.1f", $i / 100));
 	}
     }
 
@@ -425,13 +455,20 @@ sub make_gui_graphwindow( $$ ) {
     $canvas->Tk::bind('<Configure>' => sub { make_diagram ($win, $canvas, $xmax, $ymax) });
 }
 
+sub get_about_file () {
+  my $result = "$progdir/about-en";
+  my $file="$progdir/about-$LOC{'posix_lang'}";
+  $result = $file if (-e $file);
+  $result;
+}
+
 ## display about window
 sub make_gui_aboutwindow () {
     my $win=$main_widget->Toplevel;
     my ($width, $height) = (200, 200);
 
     my ($about_txt, $about_lines, $about_columns) = ("", 0, 0);
-    if (open (ABT, "$progdir/about-$cfg_gui{'lang'}")) {
+    if (open (ABT, get_about_file())) {
 	while (<ABT>) {
 	    $about_txt .= $_;
 	    $about_lines++;
@@ -454,7 +491,8 @@ sub make_gui_aboutwindow () {
 
 ## display money and time statisctics from user owned logfile
 sub make_gui_statwindow () {
-    make_gui_textwindow ("perl $progdir/stat_new.pl $dm::cost_out_file |",  "$APPNAME: Stat");
+  make_gui_textwindow_arr(log_stat::do_work("$dm::cost_out_file", 7, 6, $LOC{'lc_currency_symbol'}),
+			  "$APPNAME: Stat");
 }
 
 ## display FILE in window with title TITLE
@@ -482,6 +520,29 @@ sub make_gui_textwindow ( $$ ) {
 			   );
     $txt->pack();
     $txt->insert('end', $stat_txt);
+}
+
+sub make_gui_textwindow_arr( $$ ) {
+  my ($arr, $title) = @_;
+  my $win=$main_widget->Toplevel;
+  my ($width, $height) = (200, 200);
+
+  my ($stat_txt, $stat_lines, $stat_columns) = ("", 0, 0);
+  foreach (@$arr) {
+    $stat_txt .= $_;
+    $stat_lines++;
+    my $len = length($_);
+    $stat_columns = $len if ($len > $stat_columns);
+  }
+  chomp $stat_txt;
+
+  $win->title("$title");
+  my $txt = $win->ROText(-height => $stat_lines,
+			 -width => $stat_columns,
+			 -wrap => 'none'
+			);
+  $txt->pack();
+  $txt->insert('end', $stat_txt);
 }
 
 sub make_gui_mainwindow () {
@@ -512,7 +573,6 @@ sub make_gui_mainwindow () {
     $file_menu->add ('checkbutton',
 		     -label =>  $LOC{'menu_file_hangup_defer'},
 		     -variable => \$dm::flag_stop_defer);
-		    
 
     $file_menu->command (-label => $LOC{'menu_file_save'}, -command => sub { save_config() });
     $file_menu->command (-label => $LOC{'menu_file_quit'}, -command => sub { dm::disconnect () ; exit });
@@ -520,6 +580,7 @@ sub make_gui_mainwindow () {
     $edit_menu->command (-label => $LOC{'menu_edit_peer_options'}, -command => sub { pcfg_editor_window (100,200) });
     $edit_menu->command (-label => $LOC{'menu_edit_graph_options'}, -command => sub { color_cfg_editor_window (100,200) });
     $edit_menu->command (-label => $LOC{'menu_edit_rate_options'}, -command => sub { rcfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu_edit_socket_options'}, -command => sub { sock_cfg_editor_window (100,200) });
 
 
 ##--- View Menu
@@ -557,6 +618,42 @@ sub make_gui_mainwindow () {
     $help_menu->add ('separator');
     $help_menu->command (-label => $LOC{'menu_help_about'}, -command => sub {make_gui_aboutwindow() });
     $help_menu->command (-label => "Copyright ...", -command => sub {make_gui_textwindow("$progdir/COPYRIGHT", "$APPNAME: Copyright") });
+    my $lang_menu = $help_menu->Menu();
+    while (my ($key, $val) = each (%langs)) {
+      $lang_menu->add
+	('radiobutton',
+	 -label => $val,
+	 -variable => \$lang_menu_variable,
+	 -value => $key,
+	 -command => sub {
+	   $cfg_gui{'lang'} = $key;
+	   if ($current_applang ne $cfg_gui{'lang'}) {
+	     $app_has_restarted=1;
+	     $balloon->destroy if defined $balloon; # bug workaround?
+	     $main_widget->destroy;
+	   }
+	 });
+    }
+    $help_menu->add ('cascade', -label => "Language", -menu => $lang_menu);
+
+    my $country_menu = $help_menu->Menu();
+    while (my ($key, $val) = each (%countries)) {
+      $country_menu->add
+	('radiobutton',
+	 -label => $val,
+	 -variable => \$country_menu_variable,
+	 -value => $key,
+	 -command => sub {
+	   $cfg_gui{'country'} = $key;
+	   if ($current_appcountry ne $cfg_gui{'country'}) {
+	     $app_has_restarted=1;
+	     $balloon->destroy if defined $balloon; # bug workaround?
+	     $main_widget->destroy;
+	   }
+	 });
+    }
+    $help_menu->add ('cascade', -label => "Country", -menu => $country_menu);
+
 
     $balloon->attach($file_menu,
 		     -msg => ['',
@@ -572,6 +669,7 @@ sub make_gui_mainwindow () {
 			      $LOC{'menu_edit_graph_options.help'},
 			      $LOC{'menu_edit_rate_options.help'},
 			      $LOC{'menu_edit_options.help'},
+			      $LOC{'menu_edit_socket_options.help'},
 			      ],
                      );
     $balloon->attach($view_menu,
@@ -620,6 +718,7 @@ sub make_gui_mainwindow () {
 	unless ($usepack) {
 	    my $label;
 	    $label=$button_frame->Label(-text => $LOC{'win_main_start'})->grid(-row => $row, -column => 0);
+	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_start.help'}) if $balloon;
 	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_start.help'}) if $balloon;
 	    $label=$button_frame->Label(-text => $LOC{'win_main_money'})->grid(-row => $row, -column => 1);
 	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_money.help'}) if $balloon;
@@ -744,13 +843,17 @@ mask_widget() - produce pairs of key/value-widgets
 
 =cut
 
-sub mask_widget( $$$$$$ ) {
-    my ($mask_frame, $row, $widgets, $types, $keys, $vals) = @_;
+sub mask_widget( $$$$$$$$ ) {
+    my ($mask_frame, $row, $widgets, $types, $keys, $help, $balloon, $vals) = @_;
     for my $i (0..$#$keys) {
 	my ($key, $val) = ($$keys[$i], $$vals[$i]);
 	$val="" unless defined $val;
+	die unless defined $key;
 	db_trace("row:$row");
-	$mask_frame->Label(-text => "$key")->grid(-row => $row, -column => 0, -sticky => "e");
+	my $label = $mask_frame->Label(-text => "$key");
+	$label->grid(-row => $row, -column => 0, -sticky => "e");
+	$balloon->attach($label, -balloonmsg => $$help[$i]) if ($help and $balloon);
+
 	if ($$types[$i] eq 'text') {
 	    my $entry = $mask_frame->Entry()->grid(-row => $row, -column => 1);
 	    $entry->insert(0, $val);
@@ -779,7 +882,7 @@ sub mask_widget( $$$$$$ ) {
 
 	    $entry->insert(0, $val);
 	    $$widgets[$i] = $entry;
-	    $mask_frame->Button
+	    my $button = $mask_frame->Button
 		(-text => "$key", -command => sub
 		 {
 		     my $old_color = get_color_entry ($entry);
@@ -790,7 +893,9 @@ sub mask_widget( $$$$$$ ) {
 			 $entry->insert(0, "$color");
 			 set_color_entry ($entry, $color);
 		     }
-		 } )->grid(-row => $row, -column => 0, -sticky => "ew");
+		 } );
+	    $button->grid(-row => $row, -column => 0, -sticky => "ew");
+	    $balloon->attach($button, -balloonmsg => $$help[$i]) if ($help and $balloon);
 
 	    # Toggling color preview in Entry widget using MousePress events
 	    my ($sub_preview_on, $sub_preview_off);
@@ -1155,6 +1260,14 @@ sub rcfg_delete_row( $$$ ) {
   }
 }
 
+# make a number from a string which may be in LC_NUMERIC format
+sub make_number( $ ) {
+  my $s=shift;
+  my $dp=substr(sprintf("%1.1f", 1.1), 1, 1);
+  $s =~ s/$dp/./;
+  $s * 1;
+}
+
 # read back edited cost data
 sub rcfg_parse_matrix( $ ) {
     my ($matrix) = @_;
@@ -1187,9 +1300,9 @@ sub rcfg_parse_matrix( $ ) {
 	    $res_cond[2] = [ $start_time, $end_time ];
 	}
 
-	my $pfg_per_connect = $$r[7] * 1;
-	my $secs_per_unit = $$r[6] * 1;
-	my $pfg_per_unit = ($$r[5] / 60) * $secs_per_unit;
+	my $pfg_per_connect = make_number ($$r[7]);
+	my $secs_per_unit = make_number ($$r[6]);
+	my $pfg_per_unit = (make_number ($$r[5]) / 60) * $secs_per_unit;
 	my $f1 = ($$r[8] == 0) ? 1 : 0;
 	my $f2 = ($$r[9] == 1) ? 2 : 1;
 
@@ -1242,7 +1355,7 @@ sub pcfg_editor_window( $$ ) {
     my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
     my $win=$main_widget->Toplevel;
     $win->title("$APPNAME: Config");
-
+    my $balloon = $cfg_gui{'balloon_help'} ? $win->Balloon() : 0;
     my $frame1 = $win->Frame;
     my $box = $frame1->Listbox(-relief => 'sunken',
 			       -width => -1, # Shrink to fit
@@ -1253,12 +1366,13 @@ sub pcfg_editor_window( $$ ) {
     my $scroll = $frame1->Scrollbar(-command => ['yview', $box]);
     my $item_entry = $win->Entry();
 
+    my $frame2 = $win->Frame;
     my $frame3 = $win->Frame;
     require Tk::Dialog;
     my $dialog = $frame3->Dialog(-text => 'Really delete peer?',
 				 -title => 'tkdialup: Confirm', -default_button => 'No',
 				 -buttons => [qw/Yes No/]);
-    my $item_del_bt = $frame3->Button(-text => 'Delete Peer',
+    my $item_del_bt = $frame2->Button(-text => 'Delete Peer',
     -command => sub {
 	my $idx = $box->index('active');
 	my $isp = $dm::isps[$idx];
@@ -1283,7 +1397,7 @@ sub pcfg_editor_window( $$ ) {
 	$dialog->add('Label', -text => "Please enter a name")->pack();
 	my $add_name = $dialog->add('Entry')->pack();
 
-	my $button = $frame3->Button
+	my $button = $frame2->Button
 	  (-text => 'New Peer',
 	   -command => sub {
 	     if ($dialog->Show eq "OK" and $add_name->get and not defined ($dm::isp_cfg_map{$add_name->get}) ) {
@@ -1304,31 +1418,12 @@ sub pcfg_editor_window( $$ ) {
 	   });
 	$button;
       };
-    my $frame4 = $win->Frame;
-    my $edit_bt = $frame4->Button(-text => 'Edit Rate', -command => sub{pcfg_start_rcfg($box, $box->index('active'))});
-    my $add_rate_bt = do {
-      require Tk::DialogBox;
-      my $dialog = $frame3->DialogBox(-title => "tkdialup: New Rate", -buttons => ["OK", "Cancel"]);
-      $dialog->add('Label', -text => "Please enter a name")->pack();
-      my $name = $dialog->add('Entry')->pack();
-      my $button = $frame4->Button
-	(-text => 'New Rate',
-	 -command => sub {
-	   if ($dialog->Show eq "OK" and $name->get
-	       and not defined (my $tem = Dialup_Cost::get_rate($name->get))) {
-	     pcfg_start_rcfg_new ($name->get);
-	   }
-	 });
-      $button;
-    };
-
-
-    my $frame2 = $win->Frame;
     my $close_or_restart = sub { undef @cfg__isp_cfg_cache;
 				 if ($cc) {
 				     $cc=0;
 				     $app_has_restarted=1;
 				     $win->destroy;
+				     $balloon->destroy if defined $balloon; # bug workaround?
 				     $main_widget->destroy;
 				 } else { $win->destroy }};
 
@@ -1351,40 +1446,46 @@ sub pcfg_editor_window( $$ ) {
     $scroll->pack(-side => 'right', -fill => 'y');
 #$item_entry->pack(-fill => 'x');
 
-    {
+    my $apply_bt = do 
+      {
 	my $isp = $box->get(0);
 	my $top = $win->Frame;
 	my $mask_frame = $top->Frame;
-	my $row = mask_widget ($mask_frame, 0, \@pcfg_widgets, \@pcfg_types, \@pcfg_labels, $dm::isp_cfg_map{$isp});
-#exp#	$entries[0]->configure(-invcmd => 'bell', -vcmd => sub { 0; }, -validate => 'focusout');
+	my $row = mask_widget ($mask_frame, 0, \@pcfg_widgets, \@pcfg_types, \@pcfg_labels,
+			       \@pcfg_label_help, $balloon,
+			       $dm::isp_cfg_map{$isp});
+	#exp#	$entries[0]->configure(-invcmd => 'bell', -vcmd => sub { 0; }, -validate => 'focusout');
 	$mask_frame->Label(-text => "(Rates:)")->grid(-row => $row, -column => 0);
 	my @sorted_rate_names = do { my $ref = Dialup_Cost::get_rate_names(); sort @$ref };
 	$mask_frame->Optionmenu(-options => \@sorted_rate_names,
 				-command => sub { 
-				    $pcfg_widgets[$dm::cfg_tarif]->delete(0, 'end');
-				    $pcfg_widgets[$dm::cfg_tarif]->insert(0, shift @_);}
-#				    -variable => \$var,
-				)->grid(-row => $row, -column => 1, -sticky => "e");
+				  $pcfg_widgets[$dm::cfg_tarif]->delete(0, 'end');
+				  $pcfg_widgets[$dm::cfg_tarif]->insert(0, shift @_);}
+				#				    -variable => \$var,
+			       )->grid(-row => $row, -column => 1, -sticky => "e");
 	my $frame1 = $top->Frame;
-#XXX#	$frame1->Button(-text => 'Cancel', -command => sub{ pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets) })->pack();
-	$frame1->Button(-text => 'Apply',
-			-command => sub{pcfg_apply($top, $box, 0, \@pcfg_widgets)})->pack(-expand => 1, -fill => 'both', -side => 'right');
+	#XXX#	$frame1->Button(-text => $LOC{'common_button_cancel'}, -command => sub{ pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets) })->pack();
+	my $button = $frame2->Button(-text => $LOC{'common_button_apply'},
+				     -command => sub{pcfg_apply($top, $box, 0, \@pcfg_widgets)});
 	$frame1->pack(-fill => 'x');
 	$top->pack(-expand => 1, -fill => 'both');
-    }
+	$button;
+      };
+
+#$view_bt->pack(-side => 'bottom');
+    $apply_bt->grid(-column => 0, -row => 0, -columnspan=>2, -sticky => "ew", -padx => 2, -pady => 2);
+    $item_add_bt->grid(-column => 0, -row => 1, -sticky => "ew", -padx => 2, -pady => 2);
+    $item_del_bt->grid(-column => 1, -row => 1, -sticky => "ew", -padx => 2, -pady => 2);
+
+    $save_bt->grid(-column => 0, -row => 2, -sticky => "ew", -padx => 2, -pady => 2);
+    $exit_bt->grid(-column => 1, -row => 2, -sticky => "ew", -padx => 2, -pady => 2);
 
     $frame3->pack(-fill => 'x');
-#    $frame4->pack(-fill => 'x');
-#$view_bt->pack(-side => 'bottom');
-    $item_add_bt->pack(-side => 'right');
-    $item_del_bt->pack(-side => 'left');
-    # Rate:
-    $add_rate_bt->pack(-side => 'right');
-    $edit_bt->pack(-side => 'left');
+    $frame2->pack(-fill => 'x', -expand => 1);
 
-    $frame2->pack(-fill => 'x');
-    $save_bt->pack(-side => 'right');
-    $exit_bt->pack(-side => 'left');
+    # Rate:
+#    $add_rate_bt->pack(-side => 'right', -expand => 1, -fill => 'both');
+#    $edit_bt->pack(-side => 'left', -expand => 1, -fill => 'both');
 
     pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets);
     $box->Tk::bind ('<KeyPress>', sub { pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets) });
@@ -1392,33 +1493,99 @@ sub pcfg_editor_window( $$ ) {
     $box->focus;
 }
 
+sub sock_cfg_editor_window( $$ ) {
+  my ($xmax, $ymax) = @_;
+  my $win=$main_widget->Toplevel;
+  $win->title("$APPNAME: Sockets");
+  my $cfg = \%dm::cfg_sock;
+  my $cfg_default=$$cfg{'.config_default'};
+
+  my @widgets;
+  my @types = ('flag', 'text', 'text', 'text');
+  my @keys = ('Use Sockets', 'UI Port', 'Dialer Hostname', 'Dialer Port');
+  my @cfg_keys = ('use_sockets', 'ip_ui_port', 'ip_dialer_hostname', 'ip_dialer_port');
+  my @vals;
+  my @refs;
+  my @defaults;
+  foreach my $i (0..$#cfg_keys) {
+    if (defined $$cfg{$cfg_keys[$i]}) {
+      $vals[$i] = $$cfg{$cfg_keys[$i]};
+      $refs[$i] = \$$cfg{$cfg_keys[$i]};
+      $defaults[$i] = $$cfg_default{$cfg_keys[$i]};
+    }
+  }
+  my $top = $win->Frame;
+  my $mask_frame = $top->Frame;
+  mask_widget ($mask_frame, 0, \@widgets, \@types, \@keys, 0, 0, \@vals);
+  $mask_frame->pack(-expand => 1, -fill => 'both');
+
+  my $frame1 = $top->Frame;
+  $frame1->Button(-text => $LOC{'common_button_cancel'}, -command => sub { $win->destroy(); })->pack(-side => 'left' );
+  $frame1->Button(-text => $LOC{'common_button_apply'},
+		  -command => sub
+		  { foreach my $i (0...$#refs) {
+		    my $ref = $refs[$i];
+		    if ($types[$i] eq 'color' or $types[$i] eq 'text') {
+		      $$ref = $widgets[$i]->get();
+		      if ($types[$i] eq 'color') {
+			set_color_entry ($widgets[$i], $widgets[$i]->get());
+		      }
+		    } elsif ($types[$i] eq 'flag') {
+		      $$ref = $widgets[$i]->{'Value'};
+		    }
+		  }
+		    $win->destroy ();
+		  })->pack(-side => 'right');
+  $frame1->Button(-text => $LOC{'common_button_default'},
+		  -command => sub
+		  { foreach my $i (0..$#cfg_keys) {
+		    my $ref = $refs[$i];
+		    my $val = $defaults[$i];
+		    my $wid = $widgets[$i];
+		    #$$ref = $val;
+		    if ($types[$i] eq 'color' or $types[$i] eq 'text') {
+		      $wid->delete(0, 'end');
+		      $wid->insert(0, "$val");
+		      if ($types[$i] eq 'color') {
+			set_color_entry ($wid, $val);
+		      }
+		     } elsif ($types[$i] eq 'flag') {
+		       if ($val) { $wid->select; } else { $wid->deselect; }
+		    }}
+		  })->pack();
+  $frame1->pack(-fill => 'x');
+  $top->pack(-expand => 1, -fill => 'both');
+}
+
 sub color_cfg_editor_window( $$ ) {
     my ($xmax, $ymax) = @_;
     my $win=$main_widget->Toplevel;
     $win->title("$APPNAME: Graph Colors");
+    my $cfg = \%cfg_gui;
+    my $cfg_default=$$cfg{'.config_default'};
 
     my @widgets;
-    my @types = ('color', 'color', 'color', 'text');
-    my @keys = ('Background Color', 'Ruler Color', 'Ruler2 Color', '(Language {de,en})');
-    my @cfg_keys = ('graph_bgcolor', 'graph_nrcolor', 'graph_ercolor', 'lang');
+    my @types = ('color', 'color', 'color');
+    my @keys = ('Background Color', 'Ruler Color', 'Ruler2 Color');
+    my @cfg_keys = ('graph_bgcolor', 'graph_nrcolor', 'graph_ercolor');
     my @vals;
     my @refs;
     my @defaults;
     foreach my $i (0..$#cfg_keys) {
-	if (defined $cfg_gui{$cfg_keys[$i]}) {
-	    $vals[$i] = $cfg_gui{$cfg_keys[$i]};
-	    $refs[$i] = \$cfg_gui{$cfg_keys[$i]};
-	    $defaults[$i] = $cfg_gui_default{$cfg_keys[$i]};
+	if (defined $$cfg{$cfg_keys[$i]}) {
+	    $vals[$i] = $$cfg{$cfg_keys[$i]};
+	    $refs[$i] = \$$cfg{$cfg_keys[$i]};
+	    $defaults[$i] = $$cfg_default{$cfg_keys[$i]};
 	}
     }
     my $top = $win->Frame;
     my $mask_frame = $top->Frame;
-    mask_widget ($mask_frame, 0, \@widgets, \@types, \@keys, \@vals);
+    mask_widget ($mask_frame, 0, \@widgets, \@types, \@keys, 0, 0, \@vals);
     $mask_frame->pack(-expand => 1, -fill => 'both');
 
     my $frame1 = $top->Frame;
-    $frame1->Button(-text => 'Cancel', -command => sub { $win->destroy(); })->pack(-side => 'left' );
-    $frame1->Button(-text => 'Apply',
+    $frame1->Button(-text => $LOC{'common_button_cancel'}, -command => sub { $win->destroy(); })->pack(-side => 'left' );
+    $frame1->Button(-text => $LOC{'common_button_apply'},
 		    -command => sub
 		    { foreach my $i (0...$#refs) {
 			if ($types[$i] eq 'color' or $types[$i] eq 'text') {
@@ -1429,14 +1596,8 @@ sub color_cfg_editor_window( $$ ) {
 			    }
 			}
 		    }
-		      if ($current_applang ne $cfg_gui{'lang'}) {
-			  $app_has_restarted=1;
-			  $main_widget->destroy;
-		      } else {
-			  $win->destroy ();
-		      }
 		    })->pack(-side => 'right');
-    $frame1->Button(-text => 'Default',
+    $frame1->Button(-text => $LOC{'common_button_default'},
 		    -command => sub
 		    { foreach my $i (0..$#cfg_keys) {
 			my $ref = $refs[$i];
@@ -1480,13 +1641,13 @@ sub rcfg_editor_window( $$ ) {
       my $frame2 = $frame->Frame;
       # Edit Rate Button
       my $edit_rate = $frame2->Button
-	(-text => "Edit",
+	(-text => $LOC{'common_button_edit'},
 	 -command => sub { pcfg_start_rcfg_new ($current_rate) },
 	)->pack(-fill => 'x', -side => 'left', -expand => 'both');
       # Delete Rate Button
       require Tk::Dialog;
       my $delete_rate = $frame2->Button
-	(-text => "Delete",
+	(-text => $LOC{'common_button_delete'},
 	 -command => sub {
 	   my $delete_rate_dialog = $frame2->Dialog(-text => "[$current_rate]\nReally delete rate?",
 						    -title => 'tkdialup: Confirm', -default_button => 'No',
@@ -1504,7 +1665,7 @@ sub rcfg_editor_window( $$ ) {
 	$dialog->add('Label', -text => "Please enter a name")->pack();
 	my $name = $dialog->add('Entry')->pack();
 	my $button = $frame2->Button
-	  (-text => 'New',
+	  (-text => $LOC{'common_button_new'},
 	   -command => sub {
 	     if ($dialog->Show eq "OK" and $name->get
 		 and not defined (my $tem = Dialup_Cost::get_rate($name->get))) {
@@ -1631,27 +1792,46 @@ sub save_config () {
   dm::write_config ($cfg_file_usr, "tkdialup-config", \%cfg_tkdialup);
 }
 
-sub read_locale( $ ) {
-# read in locale file (see ./locale-de for a german locale file)
-    my $lang=shift;
-    if (open (LOC, "$progdir/locale-$lang")) {
-	my $line=0;
-	while (<LOC>) {
-	    ++$line;
-	    if (/^wday_names\s*=\s*(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+$/) {
-		@wday_names=($1, $2, $3, $4, $5, $6, $7); 
-	    } elsif (/^([a-z_.]+)\s*=\s*(.+)\s*$/) {
-		my $key=$1;
-		my $val=$2;
-		if (defined $LOC{$key}) {
-		    $LOC{$key}=dm::unescape_string($val);
-		} else {
-		    print STDERR "$progdir/locale-$lang:$line: Unknown configuration key <$1>\n";
-		}
-	    }
+sub read_locale( $$ ) {
+  # read in locale file (see ./locale-de for a german locale file)
+  my ($lang, $country)=@_;
+
+  my $read_file = sub {
+    my $file=shift;
+    if (open (LOC, $file)) {
+      my $line=0;
+      while (<LOC>) {
+	++$line;
+	if (/^wday_names\s*=\s*(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s+$/) {
+	  @wday_names=($1, $2, $3, $4, $5, $6, $7); 
+	} elsif (/^([a-z_.]+)\s*=\s*(.+)\s*$/) {
+	  my $key=$1;
+	  my $val=$2;
+	  if (defined $LOC{$key}) {
+	    $LOC{$key}=dm::unescape_string($val);
+	  } else {
+	    print STDERR "$file:$line: Unknown configuration key <$1>\n";
+	  }
 	}
-	close LOC;
+      }
+      close LOC;
     }
+  };
+
+  if ($lang eq '.automatic'
+      and defined $env_locale
+      and $env_locale =~ m/^([a-z]+)/) {
+    $lang=$1;
+  }
+
+  if ($country eq '.automatic'
+      and defined $env_locale
+      and $env_locale =~ m/^[a-z]+_([A-Z]+)?/) {
+    $country=$1;
+  }
+
+  &$read_file ("$progdir/language-$lang");
+  &$read_file ("$progdir/country-$country");
 }
 
 sub init_locale () {
@@ -1659,6 +1839,12 @@ sub init_locale () {
 %LOC=
 (
  'language_name' => 'English',
+ 'posix_lang' => 'en',
+ 'country_name' => 'USA',
+ 'posix_country' => 'US',
+ 'lc_currency_symbol' => '$',
+ 'lc_decimal_point' => '.',
+ 'currency_cent' => 'Cent',
 #---- File Menu
  'menu_file' => "File",
  'menu_file_hangup_now' => "Hangup now",
@@ -1680,6 +1866,8 @@ You can examine a rate but you cannot edit a rate yet.',
  'menu_edit_rate_options.help' => 'Config Editor to create, edit and delete rates',
  'menu_edit_graph_options' => "Graph Options",
  'menu_edit_graph_options.help' => 'Edit  background and ruler colors of graph window',
+ 'menu_edit_socket_options' => "Socket Options",
+ 'menu_edit_socket_options.help' => 'Edit parameters for communication  with dialer process.',
 #---- View Menu
  'menu_view' => "View",
  'menu_view_graph' => "Graph",
@@ -1727,13 +1915,102 @@ You can examine a rate but you cannot edit a rate yet.',
  'win_main_money.help' => "Real Time Money Counter",
  'win_main_rate' => "Rate",
  'win_main_rate.help' => "Money per Minute",
+#--- Peer Config Editor
+ 'pcfg_name' => 'Name',
+ 'pcfg_name.help' => 'Unique name for this ISP.  You cannot change it.',
+ 'pcfg_up_cmd' => 'Up Cmd',
+ 'pcfg_up_cmd.help' => 'Shell command for making a connection',
+ 'pcfg_down_cmd' => 'Down Cmd',
+ 'pcfg_down_cmd.help' => 'Shell command for disconnect',
+ 'pcfg_label' => 'Label',
+ 'pcfg_label.help' => 'Name used on both main-window-buttons and graphs',
+ 'pcfg_color' => 'Color',
+ 'pcfg_color.help' => 'Color used in graphs',
+ 'pcfg_rate' => 'Rate',
+ 'pcfg_rate.help' => 'Choose an existing rate. You may need to create one (Menu Edit=>Rate Options)',
+ 'pcfg_visible' => 'Visible',
+ 'pcfg_visible.help' => 'If it\'s visible on both main and graph window.',
+#--- Common Elements (... common element balloon help is somewhat stupid -bw/14-Sep-00)
+ 'common_button_apply' => 'Apply',
+ 'common_button_apply.help' => 'Keep values for this session',
+ 'common_button_default' => 'Default',
+ 'common_button_default.help' => 'Read in default values.',
+ 'common_button_cancel' => 'Cancel',
+ 'common_button_cancel.help' => 'Discard all changes',
+ 'common_button_edit' => 'Edit',
+ 'common_button_edit.help' => 'Start editor',
+ 'common_button_new' => 'New',
+ 'common_button_new.help' => 'Create New Item',
+ 'common_button_delete' => 'Delete',
+ 'common_button_delete.help' => 'Delete Item',
 #---
  );
+
+$langs{'.builtin'} = "$LOC{'language_name'} (builtin)";
+$countries{'.builtin'} = "$LOC{'country_name'} (builtin)";
+
+# get external languages from "language-*" files
+while (<language-*>) {
+  if (m/^language-(\w+)$/) {
+    my $id=$1;
+    if (open (IN, "language-$id")) {
+      while (<IN>) {
+	if (m/^language_name=(.+)$/) {
+	  $langs{$id}=$1;
+	  last;
+	}
+      }
+      close (IN);
+    }
+  }
 }
 
+# get external countries from "country-*" files
+while (<country-*>) {
+  if (m/^country-(\w+)$/) {
+    my $id=$1;
+    if (open (IN, "country-$id")) {
+      while (<IN>) {
+	if (m/^country_name=(.+)$/) {
+	  $countries{$id}=$1;
+	  last;
+	}
+      }
+      close (IN);
+    }
+  }
+}
 
+}
 
 ##--- Main
+sub cfg_locale {
+  @pcfg_labels = ($LOC{'pcfg_name'}, $LOC{'pcfg_up_cmd'}, $LOC{'pcfg_down_cmd'},
+		  $LOC{'pcfg_label'}, $LOC{'pcfg_color'}, $LOC{'pcfg_rate'}, $LOC{'pcfg_visible'});
+  @pcfg_label_help = ($LOC{'pcfg_name.help'}, $LOC{'pcfg_up_cmd.help'}, $LOC{'pcfg_down_cmd.help'},
+		      $LOC{'pcfg_label.help'}, $LOC{'pcfg_color.help'}, $LOC{'pcfg_rate.help'},
+		      $LOC{'pcfg_visible.help'});
+  @pcfg_types =  ('text', 'text',   'text',      'text', 'color', 'text',  'flag');
+
+  $lang_menu_variable=$cfg_gui{'lang'};
+  $country_menu_variable=$cfg_gui{'country'};
+
+
+  if (defined &POSIX::setlocale) {
+    unless ($cfg_gui{'lang'} eq '.automatic',
+	    and defined $env_locale,
+	    and POSIX::setlocale (&POSIX::LC_ALL, $env_locale)) {
+      POSIX::setlocale (&POSIX::LC_ALL, "$LOC{'posix_lang'}_$LOC{'posix_country'}") or
+	  POSIX::setlocale (&POSIX::LC_ALL, "$LOC{'posix_lang'}") or
+	      POSIX::setlocale (&POSIX::LC_ALL, "C");
+    }
+    my ($decimal_point, $currency_symbol)
+      = @{POSIX::localeconv()}{'decimal_point', 'currency_symbol'};
+    $LOC{'lc_currency_symbol'} = $currency_symbol;
+    $LOC{'lc_decimal_point'} = $decimal_point;
+  }
+}
+
 @dm::commands_on_startup = ();
 @dm::commands_before_dialing = (\&clear_gui_counter, \&update_gui_dialing);
 @dm::commands_on_connect = (\&main_window_iconify, \&update_gui_online);
@@ -1743,17 +2020,21 @@ You can examine a rate but you cannot edit a rate yet.',
 $dm::time_correction_offset = $ENV{"TKD_TIME_OFFSET"} if defined $ENV{"TKD_TIME_OFFSET"}; # MS-Windows9x
 
 restore_config ();
+dm::init ();
 
 #read_config_old((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file);
 # ???-bw/31-Aug-00 Is it allowed to restart Tk?
 while ($app_has_restarted) {
   $app_has_restarted=0;
-  if ($current_applang ne $cfg_gui{'lang'}) {
+  if ($current_applang ne $cfg_gui{'lang'} or
+     $current_appcountry ne $cfg_gui{'country'}) {
     $current_applang=$cfg_gui{'lang'};
+    $current_appcountry=$cfg_gui{'country'};
     init_locale ();
-    read_locale ($cfg_gui{'lang'});
+    read_locale ($cfg_gui{'lang'}, $cfg_gui{'country'});
+    cfg_locale ();
   }
 
   make_gui_mainwindow();
-  MainLoop;
+  MainLoop();
 }
