@@ -1,5 +1,5 @@
 #! /usr/local/bin/perl -w
-## $Id: tkdialup.pl,v 1.4 2000/09/02 01:16:11 bertw Exp bertw $
+## $Id: tkdialup.pl,v 1.5 2000/09/04 16:42:04 bertw Exp bertw $
 
 use strict;
 use dm;
@@ -38,12 +38,14 @@ my $disconnect_button;
 my $rtc_widget;
 my $pb_widget;
 my ($offs_record, $offs_isp_widget, $offs_sum_widget, $offs_money_per_minute_widget) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-## ============= Peer Config Editor Window =============================
+## ============= Peer Config Editor Window (pcfg) =============================
 my @pcfg_widgets;
 my @pcfg_labels = ('Name', 'Up Cmd', 'Down Cmd', 'Label', 'Color', 'Rate', 'Visible');
 my @pcfg_types =  ('text', 'text',   'text',      'text', 'color', 'text',  'flag');
-## ============= Rate Config Editor Window =============================
-my @cost_mask_widgets;
+## ============= Rate Config Editor Window (rcfg) =============================
+my @rcfg_widgets;
+my $rcfg_current_row=0;
+my $rcfg_current_col=0;
 ## ======================= Misc ========================================
 my $db_tracing = defined ($ENV{'DB_TRACING'}); # debug aid
 my $app_has_restarted=1; # force reinit
@@ -69,7 +71,7 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub update_progress_bar ();
  sub clear_gui_counter ();
  sub update_gui_counter ();
- sub update_gui_pfg_per_minute( $ );
+ sub update_gui_money_per_minute( $ );
  sub update_gui_rtc ();
  sub rtc_max_width ();
  sub update_gui ();
@@ -82,14 +84,14 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub main_window_iconify ();
  sub main_window_deiconify ();
  sub mask_widget( $$$$$$ );
- sub edit_bt_ok( $$$$ );
- sub cost_mask_window( $$$$$ );
- sub cost_mask_window_old( $$$ );
- sub cost_mask_data( $ );
- sub parse_cost_mask_data( $ );
- sub item_edit_bt( $$ );
- sub cfg_update_gadgets( $$ );
- sub cfg_editor_window( $$ );
+ sub pcfg_apply( $$$$ );
+ sub rcfg_make_window( $$$$$ );
+ sub rcfg_update_matrix( $$ );
+ sub rcfg_make_matrix( $ );
+ sub rcfg_parse_matrix( $ );
+ sub pcfg_start_rcfg( $$ );
+ sub pcfg_update_gadgets( $$ );
+ sub pcfg_editor_window( $$ );
  sub color_cfg_editor_window( $$ );
  sub read_config( $$$ );
  sub write_config( $ );
@@ -179,22 +181,38 @@ sub update_gui_counter () {
 
     while (my ($isp, $wid) = each (%widgets)) {
 	my $price = $sum_cache{$isp};
-	my $entry=$$wid[$offs_sum_widget];
-	$entry->delete ('1.0', 'end');
-	$entry->insert('1.0', sprintf ("%4.2f Pfg", $price));
+	my $widget=$$wid[$offs_sum_widget];
+	$widget->delete ('1.0', 'end');
+	$widget->insert('1.0', sprintf ("%4.2f Pfg", $price));
 	my $bg_color = (($cheapest == $price) ? 'Green'
 			: (($most_expensive == $price) ? 'OrangeRed'
-			   : 'Yellow'));
-	$entry->configure (-background => $bg_color);
+#			   : 'Yellow'));
+			   : $widget->parent->cget('-background')));
+	$widget->configure (-background => $bg_color);
     }
 }
 
-sub update_gui_pfg_per_minute ( $ ) {
+sub update_gui_money_per_minute ( $ ) {
     my ($curr_time)=@_;
+    my @tem;
+    while (my ($isp, $wid) = each (%widgets)) {
+      $tem[$#tem+1]=Dialup_Cost::calc_price (dm::get_isp_tarif($isp), $curr_time, 60);
+    }
+    @tem = sort {$a <=> $b} @tem;
+    my $cheapest = $tem[$[];
+    my $most_expensive = $tem[$#tem];
+
     while (my ($isp, $wid) = each (%widgets)) {
 	my $widget=$$wid[$offs_money_per_minute_widget];
+	my $price=Dialup_Cost::calc_price (dm::get_isp_tarif($isp), $curr_time, 60);
 	$widget->delete ('1.0', 'end');
-	$widget->insert('1.0', sprintf ("%.2f", Dialup_Cost::calc_price (dm::get_isp_tarif($isp), $curr_time, 60)));
+
+	$widget->insert('1.0', sprintf ("%.2f", $price));
+	my $bg_color = (($cheapest == $price) ? 'LightGreen'
+			: (($most_expensive == $price) ? 'Salmon'
+#			   : 'LightYellow'));
+			   : $widget->parent->cget('-background')));
+	$widget->configure (-background => $bg_color);
     }
 }
 
@@ -227,7 +245,7 @@ sub update_gui () {
 	    $disconnect_button->configure(-state => 'disabled');
 	}
 	update_gui_counter () if ($state == $dm::state_online);
-	update_gui_pfg_per_minute ($curr_time);
+	update_gui_money_per_minute ($curr_time);
 	update_gui_rtc ();
 	update_progress_bar () if ($state == $dm::state_online);
     }
@@ -274,7 +292,6 @@ sub make_diagram( $$$$ ) {
 				-text => dm::get_isp_label($isp),
 				-anchor => 'w',
 				-fill => dm::get_isp_color($isp));
-	    
 	    $y+=13;
 	}
     }
@@ -436,7 +453,7 @@ sub make_gui_aboutwindow () {
 
 ## display money and time statisctics from user owned logfile
 sub make_gui_statwindow () {
-    make_gui_textwindow ("$progdir/stat_new.pl < $dm::cost_out_file |",  "$APPNAME: Stat");
+    make_gui_textwindow ("perl $progdir/stat_new.pl < $dm::cost_out_file |",  "$APPNAME: Stat");
 }
 
 ## display FILE in window with title TITLE
@@ -499,8 +516,10 @@ sub make_gui_mainwindow () {
     $file_menu->command (-label => $LOC{'menu_file_save'}, -command => sub { save_config() });
     $file_menu->command (-label => $LOC{'menu_file_quit'}, -command => sub { dm::disconnect () ; exit });
 
-    $edit_menu->command (-label => $LOC{'menu_edit_peer_options'}, -command => sub { cfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu_edit_peer_options'}, -command => sub { pcfg_editor_window (100,200) });
     $edit_menu->command (-label => $LOC{'menu_edit_graph_options'}, -command => sub { color_cfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu_edit_rate_options'}, -command => sub { rcfg_editor_window (100,200) });
+
 
 ##--- View Menu
     $view_menu->command (-label => "$LOC{'menu_view_graph'} 5 min ...", -command => sub {make_gui_graphwindow(5 * $secs_per_min, 50) });
@@ -539,7 +558,6 @@ sub make_gui_mainwindow () {
     $help_menu->command (-label => "Copyright ...", -command => sub {make_gui_textwindow("$progdir/COPYRIGHT", "$APPNAME: Copyright") });
 
     $balloon->attach($file_menu,
-		     -state => 'balloon',
 		     -msg => ['',
 			      $LOC{'menu_file_hangup_now.help'},
 			      $LOC{'menu_file_hangup_defer.help'},
@@ -548,15 +566,14 @@ sub make_gui_mainwindow () {
 			      ],
                      );
     $balloon->attach($edit_menu,
-		     -state => 'balloon',
 		     -msg => ['',
 			      $LOC{'menu_edit_peer_options.help'},
 			      $LOC{'menu_edit_graph_options.help'},
+			      $LOC{'menu_edit_rate_options.help'},
 			      $LOC{'menu_edit_options.help'},
 			      ],
                      );
     $balloon->attach($view_menu,
-		     -state => 'balloon',
 		     -msg => ['',
 			      $LOC{'menu_view_graph.help'},
 			      $LOC{'menu_view_graph.help'},
@@ -572,7 +589,6 @@ sub make_gui_mainwindow () {
 			      ],);
 
     $balloon->attach($help_menu,
-		     -state => 'balloon',
 		     -msg => ['',
 			      $LOC{'menu_help_balloon_help.help'},
 			      '',
@@ -806,7 +822,7 @@ sub mask_widget( $$$$$$ ) {
 
 my @cfg__isp_cfg_cache;
 my $cc=0;
-sub edit_bt_ok( $$$$ ) {
+sub pcfg_apply( $$$$ ) {
     my ($frame, $lb, $index, $widgets) = @_;
     my @config_values;
 
@@ -842,63 +858,100 @@ sub edit_bt_ok( $$$$ ) {
 }
 
 # TODO: TAB switching order
-sub cost_mask_window( $$$$$ ) {
-    my ($parent, $rate, $matrix, $entries, $balloon) = @_;
-    my $labels=$$matrix[0];
-    my $balloons=$$matrix[2];
-    my $fmts=$$matrix[1];
-    my $start_matrix=3;
-    my $rows = scalar @$matrix - $start_matrix;
-    my $cols = scalar @$labels;
-    my $top = $parent->Frame;
-    my $table_frame = $top->Frame;
-    $table_frame->pack(-side => 'top');
-    ## make table columns
+sub rcfg_make_window( $$$$$ ) {
+  my ($parent, $rate, $matrix, $entries, $balloon) = @_;
+  my $labels=$$matrix[0];
+  my $balloons=$$matrix[2];
+  my $fmts=$$matrix[1];
+  my $start_matrix=3;
+  my $rows = scalar @$matrix - $start_matrix;
+  my $cols = scalar @$labels;
+  my $top = $parent->Frame;
+  my $table_frame = $top->Frame;
+  $table_frame->pack(-side => 'top');
+  $rcfg_current_col = $rcfg_current_row = 0;
+
+  ## make table columns
+
+  for (my $c=0; $c < $cols; $c++) {
+    my @wids;
+    $$entries[$c]=\@wids;
+    # make column label (table head)
+    my $label = $table_frame->Label(-text => $$labels[$c])->grid(-row => 0, -column => $c);
+    # atach balloon help to table head
+    $balloon->attach($label, -balloonmsg => $$balloons[$c]) if $balloon && $$balloons[$c];
+  }
+
+  foreach my $r ($start_matrix..$#$matrix) {
+    my $wr=$r - $start_matrix;
+    my $col_matrix= $$matrix[$r];
+
     for (my $c=0; $c < $cols; $c++) {
-	my @wids;
-	# make column label (table head)
-	my $label = $table_frame->Label(-text => $$labels[$c])->grid(-row => 0, -column => $c);
-	# atach balloon help to table head
-	$balloon->attach($label, -balloonmsg => $$balloons[$c]) if $balloon && $$balloons[$c];
-	# make column cells
-	foreach my $r ($start_matrix..$#$matrix) {
-	    my $wr=$r - $start_matrix;
-	    if ($$fmts[$c] =~ /^cstring:(\d+)/) {
-		my $width=$1;
-		my $wid = $table_frame->Entry(-width => $width);
-		my $col_matrix= $$matrix[$r];
-		# insert data from COL_MATRIX
-		$wid->insert(0, $$col_matrix[$c]);
-#		$balloon->attach($wid, -balloonmsg => $$balloons[$c]) if $balloon && $$balloons[$c];
-		$wid->grid(-row => $r, -column => $c);
-		$wids[$wr] = $wid;
-	    } elsif (($$fmts[$c] =~ /^checkbox$/)) {
-		my $wid = $table_frame->Checkbutton();
-		my $col_matrix= $$matrix[$r];
-		$wid->select if $$col_matrix[$c];
-#		$balloon->attach($wid, -balloonmsg => $$balloons[$c]) if $balloon && $$balloons[$c];
-		$wid->grid(-row => $r, -column => $c);
-		$wids[$wr] = $wid;
-	    }
-	}
-	$$entries[$c]=\@wids;
+      my $wids=$$entries[$c];
+      my $wid=0;
+      # make row cells
+      if ($$fmts[$c] =~ /^cstring:(\d+)/) {
+	my $width=$1;
+	$wid = $$wids[$wr] = $table_frame->Entry(-width => $width);
+	$wid->insert(0, $$col_matrix[$c]);
+	$wid->grid(-row => $r, -column => $c);
+      } elsif (($$fmts[$c] =~ /^checkbox$/)) {
+	$wid = $$wids[$wr] = $table_frame->Checkbutton();
+	$wid->select if $$col_matrix[$c];
+	$wid->grid(-row => $r, -column => $c);
+      }
+      my $curr_column=$c;
+      $wid->bind('<FocusIn>' => sub { $rcfg_current_col = $curr_column; $rcfg_current_row = $wr; 
+				      db_trace("$rcfg_current_col:$rcfg_current_row");
+				    });
     }
-    my $button_frame = $top->Frame;
-    $button_frame->pack(-side => 'bottom');
-    foreach my $lab (('Append Row', 'Insert Row', 'Remove Row')) {
-	my $wid = $button_frame->Button (-text => $lab, -state => 'disabled');
-	$wid->pack (-side => 'left');
+  }
+
+  foreach my $wr ($rows..$rows+5) {
+    my $r=$wr + $start_matrix;
+    for (my $c=0; $c < $cols; $c++) {
+      my $wids=$$entries[$c];
+      my $wid;
+      # make row cells
+      if ($$fmts[$c] =~ /^cstring:(\d+)/) {
+	my $width=$1;
+	$wid = $$wids[$wr] = $table_frame->Entry(-width => $width, -state => 'disabled');
+	$wid->grid(-row => $r, -column => $c);
+      } elsif (($$fmts[$c] =~ /^checkbox$/)) {
+	$wid = $$wids[$wr] = $table_frame->Checkbutton(-state => 'disabled');
+	$wid->grid(-row => $r, -column => $c);
+      }
+      my $curr_column=$c;
+      $wid->bind('<FocusIn>' => sub { $rcfg_current_col = $curr_column; $rcfg_current_row = $wr; 
+				      db_trace("$rcfg_current_col:$rcfg_current_row");
+				    });
     }
-    $button_frame->Button(-text => 'Save+Close',
-    -command => sub {
-      cost_update_matrix($matrix, \@cost_mask_widgets);
-      Dialup_Cost::set_pretty_rate ($rate, parse_cost_mask_data ($matrix));
-      dm::save_cost_data();
-      $parent->destroy })->pack();
-    $top;
+  }
+
+  my $button_frame = $top->Frame;
+  $button_frame->pack(-side => 'bottom');
+  $button_frame->Button(-text => 'Remove Row',
+			-command => sub {
+			  rcfg_delete_row ($matrix, \@rcfg_widgets, $rcfg_current_row);
+			})->pack(-side => 'left');
+  $button_frame->Button(-text => 'Insert Row',
+			-command => sub {
+			  rcfg_insert_row ($matrix, \@rcfg_widgets, $rcfg_current_row);
+			})->pack(-side => 'left');
+  $button_frame->Button(-text => 'Append Row',
+			-command => sub {
+			  rcfg_append_row ($matrix, \@rcfg_widgets);
+			})->pack(-side => 'left');
+  $button_frame->Button(-text => 'Save+Close',
+			-command => sub {
+			  rcfg_update_matrix($matrix, \@rcfg_widgets);
+			  Dialup_Cost::set_pretty_rate ($rate, rcfg_parse_matrix ($matrix));
+			  dm::save_cost_data();
+			  $parent->destroy })->pack();
+  $top;
 }
-## write matrix from window (symmetric to cost_mask_window())
-sub cost_update_matrix( $$ ) {
+## write matrix from window (symmetric to rcfg_make_window())
+sub rcfg_update_matrix( $$ ) {
     my ($matrix, $widgets) = @_;
     my $labels=$$matrix[0];
     my $fmts=$$matrix[1];
@@ -925,44 +978,9 @@ sub cost_update_matrix( $$ ) {
     }
 }
 
-sub cost_mask_window_old( $$$ ) {
-    my ($parent, $matrix, $entries) = @_;
-    my $labels=$$matrix[0];
-    my $fmts=$$matrix[1];
-    my ($rows, $cols) = ($#$matrix-1, $#$labels+1);
-    my $top = $parent->Frame;
-    my $table_frame = $top->Frame;
-    $table_frame->pack(-side => 'top');
-    for (my $c=0; $c < $cols; $c++) {
-	my $frame=$table_frame->Frame;
-	my @wids;
-	$frame->Label(-text => $$labels[$c])->pack(-side => 'top');
-	for (my $r=2; $r < $rows+2; $r++) {
-	    if ($$fmts[$c] =~ /cstring:(\d+)/) {
-		my $width=$1;
-		my $wid = $frame->Entry(-width => $width);
-		my $col_matrix= $$matrix[$r];
-		$wid->insert(0, $$col_matrix[$c]);
-		$wid->pack(-side => 'bottom',
-			   -expand => 1,
-			   -fill => 'x');
-		$wids[$#wids+1] = $wid;
-	    }
-	}
-	$frame->pack(-expand => 1, -fill => 'x', -side => 'left');
-	$$entries[$#$entries+1]=\@wids;
-    }
-    my $button_frame = $top->Frame;
-    $button_frame->pack(-side => 'bottom');
-    foreach my $lab (('Append Row', 'Insert Row', 'Remove Row')) {
-	my $wid = $button_frame->Button (-text => $lab);
-	$wid->pack (-side => 'left');
-    }
-    $top;
-}
-## create data table for cost preferece window (cost_mask_window())
+## create data table for cost preferece window (rcfg_make_window())
 ## 1st row are labels.  2nd row are data-type-IDs.  In 3rd row starts data.
-sub cost_mask_data( $ ) {
+sub rcfg_make_matrix( $ ) {
     my ($rate_name) = @_;
     my @labels = ($LOC{'win_rate_date_start'},
 		  $LOC{'win_rate_date_end'},
@@ -988,8 +1006,8 @@ sub cost_mask_data( $ ) {
 		    );
     my @matrix;
     $matrix[$#matrix+1] = \@labels;
-    $matrix[$#matrix+1] = ['cstring:10','cstring:10','cstring:10','cstring:10',
-			   'cstring:10','cstring:5','cstring:4','cstring:4', 'checkbox', 'checkbox'];
+    $matrix[$#matrix+1] = ['cstring:10','cstring:10','cstring:10','cstring:8',
+			   'cstring:8','cstring:5','cstring:4','cstring:4', 'checkbox', 'checkbox'];
     $matrix[$#matrix+1] = \@balloons;
     my $rate = Dialup_Cost::get_pretty_rate ($rate_name);
     foreach my $r (@$rate) {
@@ -1021,13 +1039,133 @@ sub cost_mask_data( $ ) {
 
 	$matrix[$#matrix+1]=\@sub_entries;
     }
-    parse_cost_mask_data (\@matrix);
+#test#    rcfg_parse_matrix (\@matrix);
     \@matrix;
 }
 
+sub rcfg_matrix_insert_row ( $$ ) {
+  my ($matrix, $index) = @_;
+  foreach my $i (reverse($index..$#$matrix)) {
+    $$matrix[$i+1]=$$matrix[$i];
+  }
+  $$matrix[$index]=["","","","","","",0,0]; # default matrix row
+}
+sub rcfg_matrix_delete_row ( $$ ) {
+  my ($matrix, $index) = @_;
+  foreach my $i ($index..$#$matrix-1) {
+    $$matrix[$i]=$$matrix[$i+1];
+  }
+  --$#$matrix;
+}
+
+sub rcfg_insert_row( $$$ ) {
+  my ($matrix, $widgets, $index) = @_;
+  my $start_matrix=3;
+  rcfg_matrix_insert_row ($matrix, $index + $start_matrix);
+  my $labels=$$matrix[0];
+  my $fmts=$$matrix[1];
+  my $rows = scalar @$matrix - $start_matrix;
+  my $cols = scalar @$labels;
+  ## make table columns
+  for (my $c=0; $c < $cols; $c++) {
+    my $wids=$$widgets[$c];
+    db_trace("insert_row \$index=$index \$#\$wids=$#$wids");
+    # make column cells
+    foreach my $wr (reverse($index..$#$wids-1)) {
+#      my $mr=$wr + $start_matrix;
+      my $src_wid=$$wids[$wr];
+      my $tgt_wid=$$wids[$wr+1];
+      next if ($src_wid->cget('-state') eq 'disabled');
+      $tgt_wid->configure(-state => 'normal');
+      if ($$fmts[$c] =~ /^cstring:(\d+)/) {
+	$tgt_wid->delete ('0', 'end');
+	$tgt_wid->insert ('0', $src_wid->get);
+	$src_wid->delete ('0', 'end');
+      } elsif (($$fmts[$c] =~ /^checkbox$/)) {
+	if ($src_wid->{'Value'}) {
+	  $tgt_wid->select;
+	} else {
+	  $tgt_wid->deselect;
+	}
+	$src_wid->deselect;
+      }
+    }
+  }
+  # adjust focus
+  my $wids = $$widgets[$rcfg_current_col=0];
+  my $wid=$$wids[$rcfg_current_row=$index];
+  $wid->focus;
+}
+
+sub rcfg_append_row( $$ ) {
+  my ($matrix, $widgets) = @_;
+  my $start_matrix=3;
+  my $index = $#$matrix - $start_matrix + 1;
+  rcfg_matrix_insert_row ($matrix, $index + $start_matrix);
+  my $labels=$$matrix[0];
+  my $fmts=$$matrix[1];
+  my $rows = scalar @$matrix - $start_matrix;
+  my $cols = scalar @$labels;
+  ## make table columns
+  for (my $c=0; $c < $cols; $c++) {
+    my $wids=$$widgets[$c];
+    db_trace("insert_row \$index=$index \$#\$wids=$#$wids");
+    # make column cells
+    my $tgt_wid=$$wids[$index];
+    $tgt_wid->configure(-state => 'normal');
+  }
+  my $wids = $$widgets[$rcfg_current_col=0];
+  my $wid=$$wids[$rcfg_current_row=$index];
+  $wid->focus;
+}
+
+sub rcfg_delete_row( $$$ ) {
+  my ($matrix, $widgets, $index) = @_;
+  my $start_matrix=3;
+  rcfg_matrix_delete_row ($matrix, $index + $start_matrix);
+  my $labels=$$matrix[0];
+  my $fmts=$$matrix[1];
+  my $rows = scalar @$matrix - $start_matrix;
+  my $cols = scalar @$labels;
+  ## make table columns
+  for (my $c=0; $c < $cols; $c++) {
+    my $wids=$$widgets[$c];
+    db_trace("insert_row \$index=$index \$#\$wids=$#$wids");
+    # make column cells
+    foreach my $wr ($index..$#$wids-1) {
+#      my $mr=$wr + $start_matrix;
+      my $src_wid=$$wids[$wr+1];
+      my $tgt_wid=$$wids[$wr];
+      $tgt_wid->configure(-state => 'disabled') if ($src_wid->cget('-state') eq 'disabled');
+      if ($$fmts[$c] =~ /^cstring:(\d+)/) {
+	$tgt_wid->delete ('0', 'end');
+	$tgt_wid->insert ('0', $src_wid->get);
+	$src_wid->delete ('0', 'end');
+      } elsif (($$fmts[$c] =~ /^checkbox$/)) {
+	if ($src_wid->{'Value'}) {
+	  $tgt_wid->select;
+	} else {
+	  $tgt_wid->deselect;
+	}
+	$src_wid->deselect;
+      }
+    }
+  }
+  # adjust focus
+  for (;$rcfg_current_row; --$rcfg_current_row) {
+    my $wids = $$widgets[$rcfg_current_col];
+    my $wid=$$wids[$rcfg_current_row];
+    if ($wid->cget('-state') ne 'disabled') {
+      $wid->focus;
+      last;
+    }
+  }
+}
+
 # read back edited cost data
-sub parse_cost_mask_data( $ ) {
+sub rcfg_parse_matrix( $ ) {
     my ($matrix) = @_;
+
     my @result;
     my $row_idx=-3;
     foreach my $r (@$matrix) {
@@ -1062,6 +1200,8 @@ sub parse_cost_mask_data( $ ) {
 	my $f1 = ($$r[8] == 0) ? 1 : 0;
 	my $f2 = ($$r[9] == 1) ? 2 : 1;
 
+	next if ($secs_per_unit < 1); # XXX
+
 	db_trace ("pfg_per_unit: $pfg_per_unit  secs_per_unit: $secs_per_unit  pfg_per_connect: $pfg_per_connect");
 	my @res = ( \@res_cond, [ $pfg_per_unit, $secs_per_unit, $f1, $pfg_per_connect, $f2 ] );
 	$result[$#result+1]=\@res;
@@ -1071,19 +1211,23 @@ sub parse_cost_mask_data( $ ) {
     \@result;
 }
 
-
-sub item_edit_bt( $$ ) {
-    my ($lb, $index) = @_;
+sub pcfg_start_rcfg_new( $ ) {
+    my ($rate_name) = @_;
     my $win = $main_widget->Toplevel;
-    my $balloon = $win->Balloon();
+    my $balloon = $cfg_gui{'balloon_help'} ? $win->Balloon() : 0;
+    $win->title("$APPNAME: cost for rate <$rate_name>");
+    undef @rcfg_widgets;
+    rcfg_make_window ($win, $rate_name, rcfg_make_matrix ($rate_name), \@rcfg_widgets, $balloon)->pack();
+}
+
+sub pcfg_start_rcfg( $$ ) {
+    my ($lb, $index) = @_;
     my $isp = $lb->get($index);
     my $isp_rate = dm::get_isp_tarif ($isp);
-    $win->title("$APPNAME: cost for rate <$isp_rate>");
-    undef @cost_mask_widgets;
-    cost_mask_window ($win, $isp_rate, cost_mask_data ($isp_rate), \@cost_mask_widgets, $balloon)->pack();
+    pcfg_start_rcfg_new ($isp_rate);
 };
 
-sub cfg_update_gadgets( $$ ) {
+sub pcfg_update_gadgets( $$ ) {
     my ($idx, $gadgets) = @_;
     my $cfg = $cfg__isp_cfg_cache[$idx];
     for (my $i=0; $i < $dm::cfg_SIZE; $i++) {
@@ -1101,7 +1245,7 @@ sub cfg_update_gadgets( $$ ) {
     }
 }
 
-sub cfg_editor_window( $$ ) {
+sub pcfg_editor_window( $$ ) {
     my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
     my $win=$main_widget->Toplevel;
     $win->title("$APPNAME: Config");
@@ -1134,35 +1278,56 @@ sub cfg_editor_window( $$ ) {
 	    splice (@cfg__isp_cfg_cache, $idx, 1);
 	    delete $widgets{$isp};
 	     dm::remove_isp_by_index ($idx);
-	    cfg_update_gadgets ($box->index('active'), \@pcfg_widgets);
+	    pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets);
 	}
 	});
-    my $edit_bt = $frame3->Button(-text => 'Edit Rate', -command => sub{item_edit_bt($box, $box->index('active'))});
 
-    require Tk::DialogBox;
-    my $add_dialog = $frame3->DialogBox(-title => "tkdialup: Add Peer", -buttons => ["OK", "Cancel"]);
-#	$dialog->add(Widget, args);
-    $add_dialog->add('Label', -text => "Please enter a name")->pack();
-    my $add_name = $add_dialog->add('Entry')->pack();
+    my $item_add_bt = do
+      {
+	require Tk::DialogBox;
+	my $dialog = $frame3->DialogBox(-title => "tkdialup: New Peer", -buttons => ["OK", "Cancel"]);
+	#	$dialog->add(Widget, args);
+	$dialog->add('Label', -text => "Please enter a name")->pack();
+	my $add_name = $dialog->add('Entry')->pack();
 
-    my $item_add_bt = $frame3->Button(-text => 'Add Peer', 
--command => sub {
-    if ($add_dialog->Show eq "OK" and $add_name->get and not defined ($dm::isp_cfg_map{$add_name->get}) )  {
-	my $isp = $add_name->get;
-	my $lbidx = $box->insert ('end', $isp);
-	$box->selectionClear(0, 'end');
-	$box->activate('end');
-	$box->see('end');
-	$box->selectionSet('end');
-	
-	my @config_values=("$isp","pon $isp","poff $isp","$isp","Black","FLAT", "1");
-	$cfg__isp_cfg_cache[$#cfg__isp_cfg_cache+1]=\@config_values;
-	$dm::isps[$#dm::isps+1]=$isp;
-        dm::set_isp_cfg (\@config_values);
-	cfg_update_gadgets ($box->index('active'), \@pcfg_widgets);
-	$cc++;
-    }
-    });
+	my $button = $frame3->Button
+	  (-text => 'New Peer',
+	   -command => sub {
+	     if ($dialog->Show eq "OK" and $add_name->get and not defined ($dm::isp_cfg_map{$add_name->get}) ) {
+	       my $isp = $add_name->get;
+	       my $lbidx = $box->insert ('end', $isp);
+	       $box->selectionClear(0, 'end');
+	       $box->activate('end');
+	       $box->see('end');
+	       $box->selectionSet('end');
+
+	       my @config_values=("$isp","pon $isp","poff $isp","$isp","Black","FLAT", "1");
+	       $cfg__isp_cfg_cache[$#cfg__isp_cfg_cache+1]=\@config_values;
+	       $dm::isps[$#dm::isps+1]=$isp;
+	       dm::set_isp_cfg (\@config_values);
+	       pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets);
+	       $cc++;
+	     }
+	   });
+	$button;
+      };
+    my $frame4 = $win->Frame;
+    my $edit_bt = $frame4->Button(-text => 'Edit Rate', -command => sub{pcfg_start_rcfg($box, $box->index('active'))});
+    my $add_rate_bt = do {
+      require Tk::DialogBox;
+      my $dialog = $frame3->DialogBox(-title => "tkdialup: New Rate", -buttons => ["OK", "Cancel"]);
+      $dialog->add('Label', -text => "Please enter a name")->pack();
+      my $name = $dialog->add('Entry')->pack();
+      my $button = $frame4->Button
+	(-text => 'New Rate',
+	 -command => sub {
+	   if ($dialog->Show eq "OK" and $name->get
+	       and not defined (my $tem = Dialup_Cost::get_rate($name->get))) {
+	     pcfg_start_rcfg_new ($name->get);
+	   }
+	 });
+      $button;
+    };
 
 
     my $frame2 = $win->Frame;
@@ -1173,7 +1338,7 @@ sub cfg_editor_window( $$ ) {
 				     $win->destroy;
 				     $main_widget->destroy;
 				 } else { $win->destroy }};
-    
+
     my $exit_bt = $frame2->Button(-text => 'Close', -command => $close_or_restart);
     my $save_bt = $frame2->Button(-text => 'Save+Close', -command => sub{ dm::save_config(); &$close_or_restart; });
 
@@ -1199,7 +1364,7 @@ sub cfg_editor_window( $$ ) {
 	my $mask_frame = $top->Frame;
 	my $row = mask_widget ($mask_frame, 0, \@pcfg_widgets, \@pcfg_types, \@pcfg_labels, $dm::isp_cfg_map{$isp});
 #exp#	$entries[0]->configure(-invcmd => 'bell', -vcmd => sub { 0; }, -validate => 'focusout');
-	$mask_frame->Label(-text => "(Choose Rate:)")->grid(-row => $row, -column => 0);
+	$mask_frame->Label(-text => "(Rates:)")->grid(-row => $row, -column => 0);
 	my @sorted_rate_names = do { my $ref = Dialup_Cost::get_rate_names(); sort @$ref };
 	$mask_frame->Optionmenu(-options => \@sorted_rate_names,
 				-command => sub { 
@@ -1208,25 +1373,30 @@ sub cfg_editor_window( $$ ) {
 #				    -variable => \$var,
 				)->grid(-row => $row, -column => 1, -sticky => "e");
 	my $frame1 = $top->Frame;
-#XXX#	$frame1->Button(-text => 'Cancel', -command => sub{ cfg_update_gadgets ($box->index('active'), \@pcfg_widgets) })->pack();
+#XXX#	$frame1->Button(-text => 'Cancel', -command => sub{ pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets) })->pack();
 	$frame1->Button(-text => 'Apply',
-			-command => sub{edit_bt_ok($top, $box, 0, \@pcfg_widgets)})->pack(-expand => 1, -fill => 'both', -side => 'right');
+			-command => sub{pcfg_apply($top, $box, 0, \@pcfg_widgets)})->pack(-expand => 1, -fill => 'both', -side => 'right');
 	$frame1->pack(-fill => 'x');
 	$top->pack(-expand => 1, -fill => 'both');
     }
 
     $frame3->pack(-fill => 'x');
+#    $frame4->pack(-fill => 'x');
 #$view_bt->pack(-side => 'bottom');
     $item_add_bt->pack(-side => 'right');
     $item_del_bt->pack(-side => 'left');
-    $edit_bt->pack();
+    # Rate:
+    $add_rate_bt->pack(-side => 'right');
+    $edit_bt->pack(-side => 'left');
 
     $frame2->pack(-fill => 'x');
     $save_bt->pack(-side => 'right');
     $exit_bt->pack(-side => 'left');
 
-    cfg_update_gadgets ($box->index('active'), \@pcfg_widgets);
-    $box->Tk::bind ('<ButtonRelease>', sub { cfg_update_gadgets ($box->index('active'), \@pcfg_widgets) });
+    pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets);
+    $box->Tk::bind ('<KeyPress>', sub { pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets) });
+    $box->Tk::bind ('<ButtonRelease>', sub { pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets) });
+    $box->focus;
 }
 
 sub color_cfg_editor_window( $$ ) {
@@ -1291,6 +1461,91 @@ sub color_cfg_editor_window( $$ ) {
 		  })->pack();
     $frame1->pack(-fill => 'x');
     $top->pack(-expand => 1, -fill => 'both');
+}
+
+sub rcfg_editor_window( $$ ) {
+    my ($xmax, $ymax) = @_;	#(30 * $secs_per_min, 200);
+    my $win=$main_widget->Toplevel;
+    $win->title("$APPNAME: Rate Config");
+
+    # Rate Optionmenu
+    my $frame1 = do {
+      my $current_rate="";
+      my $frame = $win->Frame(-relief => 'flat', -bd => '8');
+
+      # Choose Rate Menu
+      my $frame1 = $frame->Frame;
+      $frame1->Label(-text => "Rate: ")->pack(-fill => 'x', -side => 'left', -expand => 'both');
+      my $update_options = sub { my $wid=shift;
+				 my @sorted_rate_names = do { my $ref = Dialup_Cost::get_rate_names(); sort @$ref };
+				 $wid->configure(-options => \@sorted_rate_names);
+				 db_trace("update_options()");
+			       };
+      my $optmenu = $frame1->Optionmenu(-variable => \$current_rate)->pack (-fill => 'x', -side => 'left');
+
+      &$update_options ($optmenu);
+      my $frame2 = $frame->Frame;
+      # Edit Rate Button
+      my $edit_rate = $frame2->Button
+	(-text => "Edit",
+	 -command => sub { pcfg_start_rcfg_new ($current_rate) },
+	)->pack(-fill => 'x', -side => 'left', -expand => 'both');
+      # Delete Rate Button
+      require Tk::Dialog;
+      my $delete_rate = $frame2->Button
+	(-text => "Delete",
+	 -command => sub {
+	   my $delete_rate_dialog = $frame2->Dialog(-text => "[$current_rate]\nReally delete rate?",
+						    -title => 'tkdialup: Confirm', -default_button => 'No',
+						    -buttons => [qw/Yes No/]);
+	   if ($delete_rate_dialog->Show eq "Yes") {
+	     Dialup_Cost::delete_rate ($current_rate);
+	     &$update_options ($optmenu);
+	   }
+	 },
+	)->pack(-fill => 'x', -side => 'left', -expand => 'both');
+      # New Rate Button
+      my $new_rate = do {
+	require Tk::DialogBox;
+	my $dialog = $frame2->DialogBox(-title => "tkdialup: New", -buttons => ["OK", "Cancel"]);
+	$dialog->add('Label', -text => "Please enter a name")->pack();
+	my $name = $dialog->add('Entry')->pack();
+	my $button = $frame2->Button
+	  (-text => 'New',
+	   -command => sub {
+	     if ($dialog->Show eq "OK" and $name->get
+		 and not defined (my $tem = Dialup_Cost::get_rate($name->get))) {
+	       Dialup_Cost::set_pretty_rate($name->get, []);
+	       &$update_options ($optmenu);
+	       pcfg_start_rcfg_new ($name->get);
+	     }
+	   });
+	$button;
+      };
+      $new_rate->pack(-fill => 'x', -side => 'left', -expand => 'both');
+      # -----------------
+      $frame1->pack(-fill => 'x');
+      $frame2->pack(-fill => 'x', -expand => 'both');
+      $frame;
+    };
+
+    my $frame4 = $win->Frame;
+    my $frame2 = $win->Frame (-relief => 'sunken', -bd => '2');
+    my $exit_bt = $frame2->Button (-text => 'Cancel+Close', -command => sub { $win->destroy });
+    my $save_bt = $frame2->Button (-text => 'Save+Close',
+				   -command => sub{ dm::save_cost_data();
+						    $win->destroy });
+
+
+
+
+    $frame1->pack(-fill => 'x');
+
+    $frame4->pack(-fill => 'x');
+    $frame2->pack(-fill => 'x');
+    $save_bt->pack(-side => 'right');
+    $exit_bt->pack(-side => 'left');
+
 }
 
 ########################################################################################
@@ -1428,6 +1683,8 @@ sub init_locale () {
  'menu_edit_peer_options' => "Peer Options",
  'menu_edit_peer_options.help' => 'Run a configuration editor. Its not full implemented yet
 You can examine a rate but you cannot edit a rate yet.',
+ 'menu_edit_rate_options' => "Rate Options",
+ 'menu_edit_rate_options.help' => 'Config Editor to create, edit and delete rates',
  'menu_edit_graph_options' => "Graph Options",
  'menu_edit_graph_options.help' => 'Edit  background and ruler colors of graph window',
 #---- View Menu

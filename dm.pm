@@ -1,10 +1,12 @@
 package dm;
+## $Id$
+
 use strict;
 
 BEGIN {
     use Exporter   ();
     use vars       qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-    $VERSION = do { my @r = (q$Revision: 1.2 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    $VERSION = do { my @r = (q$Revision: 1.3 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
     @ISA         = qw(Exporter);
     @EXPORT      = qw();
     %EXPORT_TAGS = ();
@@ -38,10 +40,11 @@ $isp_curr='';       # current peer name or empty when state is "offline".
 ($cfg_isp, $cfg_cmd, $cfg_disconnect_cmd,
  $cfg_label, $cfg_color, $cfg_tarif, $cfg_active,
  $cfg_SIZE) = (0..20); # indexes of configuration attributes
+my $dm_config_version="1.1";
 ##================ Times ==========================
 $curr_secs_per_unit=0;  # ???
 $time_start=0;          # absolute time when PPP has established
-$ppp_offset=30;         # seconds used by dialing, connecting, link up (will be updated if possible)
+$ppp_offset=0;          # seconds used by dialing, connecting, link up on current/last connection
 ##================ Misc ===========================
 $cost_out_file=$ENV{"HOME"} . "/.dialup_cost.log";
 $flag_stop_defer=0;     # if not 0 then stop just before next pay-unit
@@ -55,6 +58,8 @@ my $time_disconnect = 0;
 my $time_dial_start = 0;
 my $db_start_time = time ();
 my $sr_pid;
+my $ppp_offset_avg=30;     # seconds used by dialing, connecting, link up according to history logfile
+my %ppp_offset_avg;        # initial ppp_offset_avg for some (!) ISPs according to  history logfile
 
 # file-private lexicals go here
 
@@ -88,7 +93,7 @@ use strict;
 use Time::Local;
 use Fcntl;
 use Fcntl qw(:flock);
-use IO::Handle;
+#use IO::Handle;
 
 use Graphs;
 use Dialup_Cost;
@@ -102,16 +107,13 @@ use Dialup_Cost;
  sub get_isp_flag_active( $ );
  sub get_isp_cfg( $$ );
  sub set_isp_cfg( $ );
+ sub remove_isp( $ );
  sub db_time ();
  sub db_trace ( $ );
  sub link_started ();
  sub link_stopped ();
  sub tick ();
  sub state_trans_startup_to_offline ();
- sub state_trans_offline_to_dialing ();
- sub state_trans_dialing_to_online ();
- sub state_trans_dialing_to_offline ();
- sub state_trans_online_to_offline ();
  sub update_state ();
  sub get_sum ( $ );
  sub format_ltime ( $ );
@@ -128,7 +130,9 @@ use Dialup_Cost;
  sub escape_string( $ );
  sub unescape_string( $ );
  sub read_config( $ );
- sub write_config( $ );
+ sub write_config( $$$ );
+ sub init_ppp_offset_avg();
+ sub get_ppp_offset_avg( $ );
 ##----
 
 
@@ -141,6 +145,23 @@ sub get_isp_flag_active( $ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_active]; 
 sub get_isp_cfg( $$ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$_[1]]; }         # one of the item of ISP selected by INDEX
 sub set_isp_cfg( $ ) { my ($a)=@_; $isp_cfg_map{$$a[0]} = $a; }              # store/replace CFG by reference
 
+sub remove_isp_by_name( $ ) {
+    my $isp = shift;
+    db_trace("remove_isp($isp)");
+    undef $isp_cfg_map{$isp};
+    for my $i ($[..$#isps) {
+	if ($isps[$i] eq $isp) {
+	    splice (@isps, $i, 1);
+	    last;
+	}
+    }
+}
+sub remove_isp_by_index( $ ) {
+    my $isp_idx = shift;
+    db_trace("remove_isp_by_index($isp_idx)");
+    undef $isp_cfg_map{$isps[$isp_idx]};
+    splice (@isps, $isp_idx, 1);
+}
 
 sub db_time () {
     time ();
@@ -184,29 +205,29 @@ sub state_trans_startup_to_offline () {
     db_trace ("state_trans_startup_to_offline");
     $state = $state_offline; foreach my $cmd (@commands_on_startup) { &$cmd; }
 }
-sub state_trans_offline_to_dialing () {
+my $state_trans_offline_to_dialing = sub {
     db_trace ("state_trans_offline_to_dialing");
     $time_dial_start = db_time();
     $state = $state_dialing; foreach my $cmd (@commands_before_dialing) { &$cmd; }
-}
-sub state_trans_dialing_to_online () {
+};
+my $state_trans_dialing_to_online = sub {
     db_trace ("state_trans_dialing_to_online");
     $time_start = db_time();
     link_started ();
     $state = $state_online; foreach my $cmd (@commands_on_connect) { &$cmd; }
-}
-sub state_trans_dialing_to_offline () {
+};
+my $state_trans_dialing_to_offline = sub  {
     db_trace ("state_trans_dialing_to_offline");
     $state = $state_offline; foreach my $cmd (@commands_on_connect_failure) { &$cmd; }
     link_stopped();
-}
-sub state_trans_online_to_offline () {
+};
+my $state_trans_online_to_offline = sub {
     db_trace ("state_trans_online_to_offline");
     $time_disconnect = db_time();
     $state = $state_offline; foreach my $cmd (@commands_on_disconnect) { &$cmd; }
     write_ulog();
     link_stopped();
-}
+};
 
 sub update_state () {
     my ($c, $count);
@@ -216,12 +237,12 @@ sub update_state () {
 	$c="x" unless $count; # EOF
 	$x=1 if ($c eq 'x' or $c eq 'f' or $c eq 't');
 	if ($state == $state_dialing) {
-	    state_trans_dialing_to_online () if ($c eq "c");
-	    state_trans_dialing_to_offline () if ($c eq "f" or $c eq 'x');
+	    &$state_trans_dialing_to_online () if ($c eq "c");
+	    &$state_trans_dialing_to_offline () if ($c eq "f" or $c eq 'x');
 	} elsif ($state == $state_online) {
-	    state_trans_online_to_offline () if ($c eq "t");    
+	    &$state_trans_online_to_offline () if ($c eq "t");    
 	} elsif ($state == $state_offline) {
-	    state_trans_offline_to_dialing () if ($c eq "d");
+	    &$state_trans_offline_to_dialing  if ($c eq "d");
 	}
 	last unless $count; # EOF
     }
@@ -252,11 +273,15 @@ sub format_ltime ( $ ) {
 sub parse_ltime( $ ) {
     my ($time)= @_;
     my $result=0;
-    if ($time=~/^(\d{4})-(\d+)-(\d+)T(\d+):(\d+):(\d+)/) {
+    if ($time=~/^(\d{4})-(\d+)-(\d+)[T ](\d+):(\d+):(\d+)/) {
         # 2000-08-25T18:54:39
         #  1   2  3  4  5  6
 	$result = timelocal ($6, $5, $4, $3, $2 - 1, $1 - 1900);
-    } else { die; }
+      } elsif ($time=~/^\s*(\d{4})-(\d+)-(\d+)\s*$/) {
+        # 2000-08-25
+        #  1   2  3 
+	$result = timelocal (0, 0, 0, $3, $2 - 1, $1 - 1900);
+      } else { die; }
     $result;
 }
 
@@ -290,7 +315,8 @@ sub parse_day_time ( $ ) {
 
 ## write info about last connection into user owned logfile
 sub write_ulog () {
-    db_trace ("write_ulog()");
+  db_trace ("write_ulog()");
+  if (open (LOG, ">>$cost_out_file")) {
     flock (LOG, LOCK_EX);
     printf LOG ("<connect peer='%s' cost='%f' duration='%u' pppoffs='%u' start='%s' stop='%s' rate='%s' />\n",
 		$isp_curr,
@@ -301,6 +327,8 @@ sub write_ulog () {
 		format_ltime ($time_disconnect),
 		get_isp_tarif ($isp_curr));
     flock (LOG, LOCK_UN);
+    close LOG;
+  }
 }
 
 sub update_sum () {
@@ -369,30 +397,51 @@ sub check_automatic_disconnect () {
     # perform deferred disconnection
     if ($flag_stop_defer and ($secs_used_in_unit + $unit_end_inaccuracy) > $curr_secs_per_unit) {
 	$flag_stop_defer = 0;
-	cb_disconnect ();
+	disconnect ();
     }
     no integer;
 }
 
+my $dialup_fork = sub {
+  my ($isp, $cmd) = @_;
+  db_trace("dialup_fork ($isp, $cmd)");
+  disconnect ();		#XXX
+  start_plog_scanner () or die "$progname: cannot start status_reader.pl";
+  $isp_curr = $isp;
+  # exec external connect command asynchronous
+  my $pid = fork();
+  if ($pid == 0) {
+    unless (exec ($cmd)) {
+      $state=$state_offline;
+      exec ('echo') or die;	# FIXME: die will not work properly in a Tk callback
+    }
+  } elsif (! defined ($pid)) {
+    $isp_curr = '';
+  } else {
+    db_trace("child_pid = $pid");
+    update_state ();
+  }
+};
+
+my $dialup_system = sub {
+  my ($isp, $cmd) = @_;
+  db_trace("dialup_system ($isp, $cmd)");
+  disconnect ();		#XXX
+  start_plog_scanner () or die "$progname: cannot start status_reader.pl";
+  $isp_curr = $isp;
+  qx($cmd);
+};
+
+my $dialup_hook=$dialup_fork;
 
 sub dialup ( $ ) {
-    my $isp = shift;
-    start_plog_scanner () or die "$progname: cannot start status_reader.pl";
-    my $cmd = get_isp_cmd($isp);
-    $isp_curr = $isp;
-    # exec external connect command asynchronous
-    my $pid = fork();
-    if ($pid == 0) {
-	unless (exec ($cmd)) {
-	    $state=$state_offline;
-	    exec ('echo') or die; # FIXME: die will not work properly in a Tk callback
-	}
-    } elsif (! defined ($pid)) {
-	$isp_curr = '';
-    } else {
-	db_trace("child_pid = $pid");
-	update_state ();
-    }
+  my $isp = shift;
+  my $cmd = get_isp_cmd($isp);
+  if ($cmd =~ s/^(.+)\&\s*$/$1/) {
+    &$dialup_fork ($isp, $cmd);
+  } else {
+    &$dialup_system ($isp, $cmd);
+  }
 }
 
 sub disconnect () {
@@ -427,88 +476,187 @@ sub unescape_string( $ ) {
 #test# print STDERR unescape_string (escape_string ("double-quote: \" single-quote: ' percent-sign: %"));
 sub read_config( $ ) {
     my ($file) =@_;
+    my $result=0;
+    my $section="dm-config";
+    my $config_version=$dm_config_version;
     if (open IN, ("$file")) {
 	while (<IN>) {
-	    if (/^\<([a-z]+) /) {
-		my $tag = $1; 
-		my @result;
-		while (m/\b([a-z_]+)\=["']([^\"\']*)['"]/g) {
-		    my ($key, $val) = ($1, unescape_string ($2));
-		    if ($tag eq "peer") {
-			if (defined $n2i{$key}) {
-			    my $idx=$n2i{$key};
-			    $result[ $idx ]=$val;
-			    #db_trace ("key=<$key> val=<$val> idx=<$idx>");
+	    if (m/^\<$section\s+version=[\"]([^\"]+)[\"]\s*\>/) {
+		my $current_version="$1";
+		while (<IN>) {
+		    last if (m/\<\/$section\s*\>/);
+		    next if ($current_version ne $config_version);
+		    if (/^\<record /) {
+			$result++; #XXX-bw/01-Sep-00
+			my @record;
+			while (m/\b([a-z_]+)\=["']([^\"\']*)['"]/g) {
+			    my ($key, $val) = ($1, unescape_string ($2));
+			    if (defined $n2i{$key}) {
+				my $idx=$n2i{$key};
+				$record[ $idx ]=$val;
+				#db_trace ("key=<$key> val=<$val> idx=<$idx>");
+			    }
 			}
-		    } elsif ($tag eq "gui") {
-		#	$cfg_gui{"$key"} = $val;
+			if (defined $record[0]) {
+			    $isps[$#isps+1]=$record[0];
+			    set_isp_cfg (\@record);
+			}
 		    }
-		}
-		if ($tag eq "peer" && defined $result[0]) {
-		    $isps[$#isps+1]=$result[0];
-		    set_isp_cfg (\@result);
 		}
 	    }
 	}
 	close IN;
-	1;
-    } else {
-	0;
-    }
+	$result } else { 0 }
 }
 
-# TODO-bw/28-Aug-00: allow selective saving
-sub write_config( $ ) {
-    my ($file) =@_;
-    if (open OUT, (">$file")) {
-	my $fi = '%s=\'%s\'';
-	my $fmt_line = "<peer $fi $fi $fi $fi $fi $fi $fi />\n";
-	foreach my $isp (@dm::isps) {
-	    printf OUT ($fmt_line,
-			$cfg_att_names[$cfg_isp], escape_string ($isp),
-			$cfg_att_names[$cfg_cmd], escape_string (get_isp_cmd($isp)),
-			$cfg_att_names[$cfg_disconnect_cmd], escape_string (get_isp_disconnect_cmd($isp)),
-			$cfg_att_names[$cfg_label], escape_string (get_isp_label($isp)),
-			$cfg_att_names[$cfg_color], escape_string (get_isp_color($isp)),
-			$cfg_att_names[$cfg_tarif], escape_string (get_isp_tarif($isp)),
-			$cfg_att_names[$cfg_active], escape_string (get_isp_flag_active($isp)));
+# TODO-bw/01-Sep-00: implement file locking. cleanup the code.
+sub write_config( $$$ ) {
+    my ($file, $section, $cfg_arg) =@_;
+    db_trace("write_config($file, $section, $cfg_arg)");
+    my $requested_version=($section eq "dm-config" ? $dm_config_version : $$cfg_arg{'.config_version'});
 
+    # create config file if not exist
+    if (! -e $file) {
+	if (open OUT, (">$file")) {
+	   close OUT;
+        }
+    }
+    # read and write config file, keep all sections except requested $section of $version
+    if (open IN, ("$file")) {
+	my @content;
+	my $section_idx=-1;
+	while (<IN>) {
+	    if (m/^\<([a-z\-_]+)\s+version=[\"]([^\"]+)[\"]\s*\>/
+		and ($1 eq $section) and ($2 eq $requested_version)) {
+		my $version=$1;
+		$section_idx=$#content;
+		while (<IN>) {
+		    last if (m/^\<\/$section\>/);
+		}
+	    } else {
+		$content[$#content+1]=$_;
+	    }
 	}
-=pod
-	{
-	    my $line="";
-	    my $count=0;
-	    while (my ($key, $val) = each (%cfg)) {
-		if ("$cfg_default{$key}" ne $val) {
-		    $line .= "$key='" . escape_string ($val) . "' ";
-		    db_trace ("key=<$key> val=<$val> count=<$count>");
+	close IN;
+	if (open OUT, (">$file")) {
+	    for my $i (0..$section_idx) {
+		print OUT $content[$i];
+		db_trace("i1=$i");
+	    }
+	    if ($section eq "dm-config") {
+		print OUT "<dm-config version=\"$dm_config_version\">\n<peers>\n";
+		my $fi = '%s=\'%s\'';
+		my $fmt_line = "<record $fi $fi $fi $fi $fi $fi $fi />\n";
+		foreach my $isp (@dm::isps) {
+		    printf OUT ($fmt_line,
+				$cfg_att_names[$cfg_isp], escape_string ($isp),
+				$cfg_att_names[$cfg_cmd], escape_string (get_isp_cmd($isp)),
+				$cfg_att_names[$cfg_disconnect_cmd], escape_string (get_isp_disconnect_cmd($isp)),
+				$cfg_att_names[$cfg_label], escape_string (get_isp_label($isp)),
+				$cfg_att_names[$cfg_color], escape_string (get_isp_color($isp)),
+				$cfg_att_names[$cfg_tarif], escape_string (get_isp_tarif($isp)),
+				$cfg_att_names[$cfg_active], escape_string (get_isp_flag_active($isp)));
+
+		}
+		print OUT "</peers>\n</dm-config>\n";
+	    } else {
+		my $config_version=$$cfg_arg{'.config_version'};
+		my $content="";
+		while (my ($config_tag, $cfg_hash) = each (%$cfg_arg)) {
+		    next unless substr($config_tag, 0, 1) ne "."; #skip special keys
+		    my $cfg_default_hash=$$cfg_hash{'.config_default'};
+		    my $line="";
+		    my $count=0;
+		    while (my ($key, $val) = each (%$cfg_hash)) {
+			if (substr($key, 0, 1) ne "." && "$$cfg_default_hash{$key}" ne $val) {
+			    $line .= "$key=\"" . escape_string ($val) . "\" ";
+			    db_trace ("key=<$key> val=<$val> count=<$count>");
+			}
+		    }
+		    $content .= "<$config_tag $line/>\n";
+		}
+		if ($content) {
+		    print OUT "<$section version=\"$config_version\">\n" . $content . "</$section>\n";
 		}
 	    }
-	    if ($line) {
-		print OUT '<cfg ' . $line . "/>\n";
+	    for my $i ($section_idx+1..$#content) {
+		db_trace("i=$i");
+		print OUT $content[$i];
 	    }
-	}
-=cut
-	close OUT;
-	1;
-    } else {
-	0;
+		close OUT;
+	    1 } else { 0 }
+	1 } else { 0 }
+}
+
+sub save_config () { write_config ($cfg_file_usr, "dm-config", 0); }
+
+=pod
+sub xxx {
+    my @result;
+    foreach my $isp (@dm::isps) {
+	my %cfg;
+	@result[$#result+1]=\%cfg;
+	$cfg{$cfg_att_names[$cfg_isp]} = $isp;
+	$cfg{$cfg_att_names[$cfg_cmd]} = get_isp_cmd($isp);
+	$cfg{$cfg_att_names[$cfg_disconnect_cmd]} = get_isp_disconnect_cmd($isp);
+	$cfg{$cfg_att_names[$cfg_label]} = get_isp_label($isp);
+	$cfg{$cfg_att_names[$cfg_color]} = get_isp_color($isp);
+	$cfg{$cfg_att_names[$cfg_tarif]} = get_isp_tarif($isp);
+	$cfg{$cfg_att_names[$cfg_active]} = get_isp_flag_active($isp);
     }
 }
+=cut
 
-sub save_config () { write_config ($cfg_file_usr); }
-
-read_config((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file) or die;
-Dialup_Cost::read_data((-e $cost_file_usr) ? $cost_file_usr : $cost_file);
-
-# open log file
-if (defined $cost_out_file) {
-    open (LOG, ">>$cost_out_file") or die;
-    LOG->autoflush (1);
-    db_trace("LOG open");
-#    close LOG unless (flock (LOG, LOCK_EX | LOCK_NB));
+# set $ppp_offset_avg and %ppp_offset_avg according to history logfile
+sub init_ppp_offset_avg() {
+  my $count=0;
+  my $sum;
+  my %count;
+  my %sum;
+  if (open (IN, "tac $cost_out_file |")) {
+    while (<IN>) {
+      if (/^\<connect /) {
+	my $pppoffs= $1 if (m/\bpppoffs=["'](\d+)['"]/);
+	next unless defined ($pppoffs);
+	my $peer= $1 if (m/\bpeer=["'](\w*)['"]/);
+	next unless defined ($peer);
+	if ($count < 20) {
+	  ++$count;
+	  $sum+=$pppoffs;
+	}
+	if (!defined $count{$peer} or $count{$peer} < 20) {
+	  ++$count{$peer};
+	  $sum{$peer}+=$pppoffs;
+	}
+      }
+    }
+    close IN;
+    use integer;
+    ($ppp_offset_avg = $sum / $count) if ($count > 0);
+    while (my ($peer, $count) = each (%count)) {
+      ($ppp_offset_avg{$peer} = $sum{$peer} / $count) if ($count > 0);
+      db_trace("ppp_offset_avg{$peer}=$ppp_offset_avg{$peer} count=$count");
+    }
+    no integer;
+  }
 }
 
+sub get_ppp_offset_avg( $ ) {
+  my $peer=shift;
+  defined $ppp_offset_avg{$peer} ? $ppp_offset_avg{$peer} : $ppp_offset_avg;
+}
+
+sub save_cost_data () {
+  my $str=Dialup_Cost::write_data_ff();
+  if (open OUT, (">$cost_file_usr")) {
+    print OUT $str;
+    close (OUT);
+  }
+}
+
+init_ppp_offset_avg ();
+read_config($cfg_file_usr) or read_config($cfg_file);
+Dialup_Cost::read_data((-e $cost_file_usr) ? $cost_file_usr : $cost_file);
 
 1;
 END { }       # module clean-up code here (global destructor)
