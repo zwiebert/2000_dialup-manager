@@ -4,86 +4,75 @@ use strict;
 BEGIN {
     use Exporter   ();
     use vars       qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-    # set the version for version checking
-    $VERSION     = 1.0;
-    # if using RCS/CVS, this may be preferred
-    $VERSION = do { my @r = (q$Revision: 1.1 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r }; # must be all one line, for MakeMaker
-
+    $VERSION = do { my @r = (q$Revision: 1.2 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
     @ISA         = qw(Exporter);
     @EXPORT      = qw();
-    %EXPORT_TAGS = ();		# eg: TAG => [ qw!name1 name2! ],
-
-    # your exported package globals go here,
-    # as well as any optionally exported functions
-    @EXPORT_OK   = qw(@isps $isp_curr $state_startup $db_ready @cfg_labels @cfg_isp $cost_out_file
-		      %isp_cfg_map $time_start $curr_secs_per_unit
-		      $flag_stop_defer $state $state_startup $state_offline $state_dialing $state_online
-		      @commands_on_startup  @commands_before_dialing  @commands_on_connect
-		      @commands_on_connect_failure @commands_on_disconnect
-		      $cfg_isp $cfg_cmd $cfg_disconnect_cmd $cfg_label $cfg_color $cfg_tarif $cfg_active $cfg_SIZE
-		      $ppp_offset);
+    %EXPORT_TAGS = ();
+    @EXPORT_OK   = qw();
 }
-use vars      @EXPORT_OK;
+use vars @EXPORT_OK;
+use vars qw(@isps $isp_curr $state_startup @cfg_labels @cfg_isp $cost_out_file
+	    %isp_cfg_map $time_start $curr_secs_per_unit
+	    $flag_stop_defer $state $state_startup $state_offline
+	    $state_dialing $state_online
+	    @commands_on_startup  @commands_before_dialing  @commands_on_connect
+	    @commands_on_connect_failure @commands_on_disconnect
+	    $cfg_isp $cfg_cmd $cfg_disconnect_cmd $cfg_label $cfg_color
+	    $cfg_tarif $cfg_active $cfg_SIZE
+	    $ppp_offset);
 
-# non-exported package globals go here
-use vars      qw();
 
-# initialize package globals, first exported ones
-
-# then the others (which are still accessible as $Some::Module::stuff)
+##============== State Machine ===================
+# hooks for commands called on transitions (writable!)
+@commands_on_startup = (); @commands_before_dialing = (); @commands_on_connect = ();
+ @commands_on_connect_failure = (); @commands_on_disconnect = ();
+# state identifiers
+($state_startup, $state_offline, $state_dialing,
+ $state_online) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+# current state
+$state=$state_startup; 
+##================ Peers ==========================
+@isps=();           # list of all peer names
+$isp_curr='';       # current peer name or empty when state is "offline".
+%isp_cfg_map=();    # configuration arrays for each peer
+($cfg_isp, $cfg_cmd, $cfg_disconnect_cmd,
+ $cfg_label, $cfg_color, $cfg_tarif, $cfg_active,
+ $cfg_SIZE) = (0..20); # indexes of configuration attributes
+##================ Times ==========================
+$curr_secs_per_unit=0;  # ???
+$time_start=0;          # absolute time when PPP has established
+$ppp_offset=30;         # seconds used by dialing, connecting, link up (will be updated if possible)
+##================ Misc ===========================
+$cost_out_file=$ENV{"HOME"} . "/.dialup_cost.log";
+$flag_stop_defer=0;     # if not 0 then stop just before next pay-unit
 
 # all file-scoped lexicals must be created before
 # the functions below that use them.
 
+##--- Commands Issued Each Tick
+my @commands_while_online = (\&update_sum, \&check_automatic_disconnect);
+my $time_disconnect = 0;
+my $time_dial_start = 0;
+my $db_start_time = time ();
+my $sr_pid;
+
 # file-private lexicals go here
 
-# make all your functions, whether exported or not;
-# remember to put something interesting in the {} stubs
-
-
-#! /usr/local/bin/perl -w
-
-use strict;
-use Time::Local;
-use Fcntl;
-use Fcntl qw(:flock);
-use IO::Handle;
-
+##--- constants
 $0 =~ m!^(.*)/([^/]*)$! or die "path of program file required (e.g. ./$0)";
 my ($progdir, $progname) = ($1, $2);
-
-use Graphs;
-use Dialup_Cost;
-
-@isps=();
-%isp_cfg_map=();
-($cfg_isp, $cfg_cmd, $cfg_disconnect_cmd, $cfg_label, $cfg_color, $cfg_tarif, $cfg_active, $cfg_SIZE) = (0..20);
+my %records;
+my @template_rate_record = (0, 0);  # a template object for cloning
+my ($offs_sum, $offs_time_last) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
 my @cfg_att_names = ('id', 'up_cmd', 'down_cmd', 'label', 'color', 'rate', 'active_flag');
 my %n2i; foreach my $i (0..$#cfg_att_names) { $n2i{$cfg_att_names[$i]} = $i; }
-
-sub get_isp_tarif ($) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_tarif]; }   # payment-id of ISP
-sub get_isp_cmd ($) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_cmd]; }       # external dialup command of ISP
-sub get_isp_disconnect_cmd ($) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_disconnect_cmd]; }       # external disconnect command of ISP
-sub get_isp_label ($) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_label]; }   # label on connect button of ISP
-sub get_isp_color ($) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_color]; }   # color in cost graph of ISP
-sub get_isp_flag_active ($) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_active]; }   # string of single letter flags
-sub get_isp_cfg ($$) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$_[1]]; }         # one of the item of ISP selected by INDEX
-sub set_isp_cfg ($) { my ($a)=@_; $isp_cfg_map{$$a[0]} = $a; }              # store/replace CFG by reference
-
-$ppp_offset=30;
 my $unit_end_inaccuracy=5; # hangup this seconds before we think a unit ends
-$db_ready = 0; # debugging switch
 my $db_tracing = defined ($ENV{'DB_TRACING'});
-$isp_curr= defined $ARGV[0] ? $ARGV[0] : '';
-my $sr_pid;
 my $cfg_file="${progdir}/dialup_manager.cfg";
 my $cfg_file_usr=$ENV{"HOME"} . "/.dialup_manager.cfg";
 my $cost_file="${progdir}/dialup_cost.data";
 my $cost_file_usr=$ENV{"HOME"} . "/.dialup_cost.data";
-$cost_out_file=$ENV{"HOME"} . "/.dialup_cost.log";
-$flag_stop_defer=0;  # if not 0 then stop just before next pay-unit
-
-# constants
+##--- constants
 my $days_per_week = 7;
 my $hours_per_day = 24;
 my $mins_per_hour = 60;
@@ -92,7 +81,27 @@ my $secs_per_min = 60;
 my $secs_per_hour = $secs_per_min * $mins_per_hour;
 my $secs_per_day = $secs_per_hour * $hours_per_day;
 
+# make all your functions, whether exported or not;
+# remember to put something interesting in the {} stubs
+
+use strict;
+use Time::Local;
+use Fcntl;
+use Fcntl qw(:flock);
+use IO::Handle;
+
+use Graphs;
+use Dialup_Cost;
+
 ##--- Protos
+ sub get_isp_tarif( $ );
+ sub get_isp_cmd( $ );
+ sub get_isp_disconnect_cmd( $ );
+ sub get_isp_label( $ );
+ sub get_isp_color( $ );
+ sub get_isp_flag_active( $ );
+ sub get_isp_cfg( $$ );
+ sub set_isp_cfg( $ );
  sub db_time ();
  sub db_trace ( $ );
  sub link_started ();
@@ -106,7 +115,7 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub update_state ();
  sub get_sum ( $ );
  sub format_ltime ( $ );
- sub parse_ltime ($);
+ sub parse_ltime( $ );
  sub format_day_time ( $ );
  sub parse_day_time ( $ );
  sub write_ulog ();
@@ -116,37 +125,21 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub check_automatic_disconnect ();
  sub dialup ( $ );
  sub disconnect ();
- sub escape_string ($);
- sub unescape_string ($);
- sub read_config ($);
- sub write_config ($);
+ sub escape_string( $ );
+ sub unescape_string( $ );
+ sub read_config( $ );
+ sub write_config( $ );
 ##----
 
-# misc globals
-$curr_secs_per_unit=10;
-$time_start = 0;
-my $time_disconnect = 0;
-my $time_dial_start = 0;
-my $db_start_time = time ();
 
-# State Transition Command Hooks
-
-@commands_on_startup = ();
-@commands_before_dialing = ();
-@commands_on_connect = ();
-@commands_on_connect_failure = ();
-@commands_on_disconnect = ();
-
-# Commands Issued Each Tick
-my @commands_while_online = (\&update_sum, \&check_automatic_disconnect);
-
-
-($state_startup, $state_offline, $state_dialing, $state_online) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
-$state=$state_startup;
-
-my %records;
-my @template_rate_record = (0, 0);
-my ($offs_sum, $offs_time_last) = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+sub get_isp_tarif( $ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_tarif]; }   # payment-id of ISP
+sub get_isp_cmd( $ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_cmd]; }       # external dialup command of ISP
+sub get_isp_disconnect_cmd( $ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_disconnect_cmd]; }       # external disconnect command of ISP
+sub get_isp_label( $ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_label]; }   # label on connect button of ISP
+sub get_isp_color( $ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_color]; }   # color in cost graph of ISP
+sub get_isp_flag_active( $ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$cfg_active]; }   # string of single letter flags
+sub get_isp_cfg( $$ ) { my $cfg=$isp_cfg_map{$_[0]}; $$cfg[$_[1]]; }         # one of the item of ISP selected by INDEX
+sub set_isp_cfg( $ ) { my ($a)=@_; $isp_cfg_map{$$a[0]} = $a; }              # store/replace CFG by reference
 
 
 sub db_time () {
@@ -256,7 +249,7 @@ sub format_ltime ( $ ) {
 	     $hour, $min, $sec,
 	     ($isdst ? "=DST" : ""));
 }
-sub parse_ltime ($) {
+sub parse_ltime( $ ) {
     my ($time)= @_;
     my $result=0;
     if ($time=~/^(\d{4})-(\d+)-(\d+)T(\d+):(\d+):(\d+)/) {
@@ -413,7 +406,7 @@ sub disconnect () {
 
 
 # configuration
-sub escape_string ($) {
+sub escape_string( $ ) {
     my ($s) = @_;
     $s =~ s/\%/\%25/g;
     $s =~ s/\'/\%27/g;
@@ -422,7 +415,7 @@ sub escape_string ($) {
 #    $s =~ s/\=/\%3d/g;
     $s;
 }
-sub unescape_string ($) {
+sub unescape_string( $ ) {
     my ($s) = @_;
 #    $s =~ s/\%3d/\=/g;
     $s =~ s/\%0A/\n/ig;
@@ -432,7 +425,7 @@ sub unescape_string ($) {
     $s;
 }
 #test# print STDERR unescape_string (escape_string ("double-quote: \" single-quote: ' percent-sign: %"));
-sub read_config ($) {
+sub read_config( $ ) {
     my ($file) =@_;
     if (open IN, ("$file")) {
 	while (<IN>) {
@@ -465,7 +458,7 @@ sub read_config ($) {
 }
 
 # TODO-bw/28-Aug-00: allow selective saving
-sub write_config ($) {
+sub write_config( $ ) {
     my ($file) =@_;
     if (open OUT, (">$file")) {
 	my $fi = '%s=\'%s\'';
