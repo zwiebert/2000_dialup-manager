@@ -1,0 +1,9 @@
+country_name=Deutschland
+posix_country=DE
+lc_country_alias=Germany
+lc_currency_symbol=DM
+currency_cent=Pfg
+
+
+# Karfreitag Ostermontag Christi-Himmelfahrt Pfingstmontag Neujahr Maifeiertag Tag_der_deutschen_Einheit 1.Weihnachtstag 2.Weihnachtstag
+country_holydays=\d{4}-(easter-2d) \d{4}-(easter+1d) \d{4}-(easter+39d) \d{4}-(easter+50d) \d{4}-01-01 \d{4}-05-01 \d{4}-10-03 \d{4}-12-24 \d{4}-12-25

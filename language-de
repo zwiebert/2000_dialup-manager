@@ -1,0 +1,101 @@
+language_name=Deutsch
+posix_lang=de
+lc_lang_alias=German
+lc_decimal_point=,
+
+wday_names=So Mo Di Mi Do Fr Sa
+
+menu_file=File
+menu_file_hangup_now=Trenne sofort
+menu_file_hangup_now.help=Sofort Auflegen unter Benutzung des Trennen-Kommandos
+menu_file_hangup_defer=Trenne bei Taktende
+menu_file_hangup_defer.help=Automatisches Auflegen kurz vor Ablauf der gegewärtigen Zeit-Einheit
+menu_file_save=Einstellungen sichern
+menu_file_save.help=Hiermit speichern Sie die Programm-Einstellungen (Farben etc.) dauerhaft.
+menu_file_quit=Ende
+menu_file_quit.help=Beenden. Eine bestehende Verbindung wird dabei automatisch getrennt.
+
+menu_edit=Edit
+menu_edit_options=Einstellungen
+menu_edit_options.help=Einige Programmeinstellungen
+menu_edit_peer_options=Peer Einstellungen
+menu_edit_peer_options.help=Editor zum Einrichten, Ändern und Entfernen von Peers.%0A(Noch nicht 100%ig fertig implementiert.)
+menu_edit_gui_options=GUI Einstellungen
+menu_edit_gui_options.help=Anpassen der Benutzerschnittstelle (Farben, Datums-Format)
+menu_edit_rate_options=Tarif Einstellungen
+menu_edit_rate_options.help=Editor zum Erstellen, Edieren und Löschen von Tarifen.%0A(Noch nicht 100%ig fertig implementiert)
+
+menu_view=View
+menu_view_graph=Graph
+menu_view_graph.help=Berechne und zeige Diagramm mit Geld/Zeit Graphen der aktiven Peers
+menu_view_clock=Digitaluhr
+menu_view_clock.help=Zeige Digitaluhr mit aktueller Zeit, Datum und Wochentag
+menu_view_stat=Statistik ...
+menu_view_stat.help=Berechne und zeige Liste mit Geld/Zeit Statistiken der letzten Tage und Monate
+menu_view_progress_bar=Zeit-Takt Balken
+menu_view_progress_bar.help=Zeige den Ablauf einer Gebühreneinheit als Fortschritts-Balken
+menu_view_disconnect_button=Trennungs Button
+menu_view_disconnect_button.help=Erstelle einen Knopf zum schnellen Trennen der Verbindung 
+menu_help=Hilfe
+menu_help_about=über ...
+menu_help_about.help=Informationen über Program und Autor
+menu_help_balloon_help=Mauszeiger Hilfe
+menu_help_balloon_help.help=Aktiviert kurze Hilfetexte ("Ballons") wenn der Mauszeiger einige Zeit über einem Element stehenbleibt
+
+button_main_hangup=Trennen
+
+win_rate_date_start=Start-Datum
+win_rate_date_start.help=Kalenderdatum an dem die Rate in Kraft trat bzw. treten wird
+win_rate_date_end=End-Datum
+win_rate_date_end.help=Kalenderdatum an dem die Rate ausser Kraft tritt bzw. trat
+win_rate_weekdays=Wochentage
+win_rate_weekdays.help=Menge von Ziffern (0..6) die für die Wochentage (So...Sa) steht%0AEin zusätzliches H aktiviert den Tarif an Feiertagen.%0AEin zusätzliches W deaktiviert diesen Tarif an Feiertagen.
+win_rate_daytime_start=Startzeit
+win_rate_daytime_start.help=Tageszeit an dem die Rate beginnt.
+win_rate_daytime_end=Endzeit
+win_rate_daytime_end.help=Tageszeit zu der die Rate aufhört(!).
+win_rate_money_per_min=G/min
+win_rate_money_per_min.help=Tarif in Geld pro Minute (nicht Geld per Takt-Einheit)
+win_rate_secs_per_unit=sek/takt
+win_rate_secs_per_unit.help=Dauer einer Takt-Einheit in Sekunden.
+win_rate_money_per_connect=G/Verb.
+win_rate_money_per_connect.help=Geld pro Verbindung, aka "Einwahlstrafe" (normalerweise 0)
+win_rate_free_linkup=FE
+win_rate_free_linkup.help=Benötigte Zeit für Einwahl und PPP-Verbindungsaubau ist umsonst.%0ANur wenige Provider haben das.
+win_rate_overlay_rate=ÜT
+win_rate_overlay_rate.help=Überlagerter Tarif.  Wenn 2 Tarife mit unterschiedlichem Zeit-Takt gleichzeitig laufen.%0ABeispie: Telefon-Kosten mit 3min-Zeit-Takt + ISP-Kosten mit 1sek-Takt.%0ADen ISP-Tarif dann bitte mit ÜT markieren.
+
+win_main_start=Verbinden
+win_main_start.help=Drücke einen Knopf zum Verbinden
+win_main_money=GbZ
+win_main_money.help=Gebührenzählung mit farblicher Max/Min Anzeige
+win_main_rate=Preis
+win_main_rate.help=Geldeinheit pro Minute mit farblicher Max/Min Anzeige%0A(Ohne Beachtung unterschiedlich langer Takzeiten!)
+
+pcfg_name=Name
+pcfg_name.help=Eindeutiger Name für diesen ISP.  Kann nicht geändert werden.
+pcfg_up_cmd=Verb.
+pcfg_up_cmd.help=Shell Kommando zum Erstellen der Verbindung%0AAuf MS-Windows bitte "w32ras" verwenden
+pcfg_down_cmd=Trenn.
+pcfg_down_cmd.help=Shell Kommando zum Beeden der Verbindung%0AAuf MS-Windows bitte "w32ras" verwenden
+pcfg_label=Label
+pcfg_label.help=Name der für Knöpfe und Diagramme verwendet wird
+pcfg_color=Farbe
+pcfg_color.help=Farbe die für den Graph verwendet wird
+pcfg_rate=Tarif
+pcfg_rate.help=Wählen sie einen Tarif.  Sie können diesen im Tarif-Editor erstellen (Menü Edit=>Tarif Einstellungen)
+pcfg_visible=Aktiv
+pcfg_visible.help=Ob dieser ISP im Haupt-Fenster und Diagrammen gezeigt sein soll.
+
+common_button_apply=Behalten
+common_button_apply.help=Verwende Einstellungen für diese Sitzung
+common_button_default=Vorgaben
+common_button_default.help=Wiederherstellen der Werkseinstellung
+common_button_cancel=Abbruch
+common_button_cancel.help=Alle Änderungen verwerfen.
+common_button_edit=Ändern
+common_button_edit.help=Editor starten
+common_button_new=Neu
+common_button_new.help=Erzeuge neues Item
+common_button_delete=Löschen
+common_button_delete.help=Löschen Item
