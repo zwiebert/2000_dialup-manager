@@ -1,0 +1,21 @@
+2000-08-28  Bert Winkelmann  <bertw@gmx.net>
+
+	* dialup_manager.pl (write_config_old, read_config_old): functions renamed
+	(read_config, write_config): complete new data format!
+	(escape_string, unescape_string): new functions
+
+2000-08-27  Bert Winkelmann  <bertw@gmx.net>
+
+	* dialup_manager.cfg: disconnect command added => new format is incompatible
+
+	* dialup_manager.pl (start_plog_scanner, stop_plog_scanner, format_day_time, parse_day_time): new functions
+
+2000-08-26  Bert Winkelmann  <bertw@gmx.net>
+
+	* dialup_manager.pl (make_gui_statwindow): new function
+
+	* stat_new.pl, stat_new.sh: new files
+
+	* dialup_manager.pl (write_ulog): new function
+	
+
