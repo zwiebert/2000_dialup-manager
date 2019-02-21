@@ -1,3 +1,17 @@
+2000-09-03  Bert Winkelmann  <bertw@gmx.net>
+
+	* tkdialup.pl (cb_dialup, cb_disconnect): functions removed
+
+2000-08-31  Bert Winkelmann  <bertw@gmx.net>
+
+	* dialup_manager.sh, tkdialup.sh: file renamed
+
+2000-08-30  Bert Winkelmann  <bertw@gmx.net>
+
+	* dialup_manager.pl: file removed (content moved to new files)
+
+	* tkdialup.pl, dm.pm: new files
+
 2000-08-28  Bert Winkelmann  <bertw@gmx.net>
 
 	* dialup_manager.pl (write_config_old, read_config_old): functions renamed

@@ -1,5 +1,5 @@
 Programm...@APP_NAME@
-Version....@APP_VERSION@ (@APP_RELDATE@)
+Version....@APP_VERSION@.@APP_MINOR_VERSION@ (@APP_RELDATE@)
 Zweck......Aufbau einer PPP Verbindung mit Kostenkontrolle
 Garantie...KEINE FUNKTIONSGARANTIE und KEINE HAFTUNG
 Autor......@APP_AUTHOR@

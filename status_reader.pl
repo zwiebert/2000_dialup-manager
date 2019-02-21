@@ -6,12 +6,19 @@ delete @ENV{'IFS', 'CDPATH', 'ENV', 'BASH_ENV'};
 my $db_tracing = defined ($ENV{'DB_TRACING'});
 
 sub db_trace ( $ ) {
-   printf STDERR ("trace: %s\n", $_[0]) if $db_tracing;
+   printf STDERR ("trace %s\n", $_[0]) if $db_tracing;
 }
 
 # scan new entries in /var/log/ppp.log
-(open PPP_LOG, "tail -n 0 --follow=name /var/log/ppp.log |") or      # GNU
-(open PPP_LOG, "tail -n 0 -F /var/log/ppp.log |") or die;            # BSD
+sub popen_log ($) {
+  my $logfile = shift;
+  -e $logfile and
+  ((open PPP_LOG, "tail -n 0 --follow=name $logfile |") or      # GNU
+   (open PPP_LOG, "tail -n 0 -F $logfile |"));                   # BSD
+}
+
+popen_log ('/var/log/ppp.log') or
+popen_log ('/var/log/syslog') or die;
 
 syswrite STDOUT, "R", 1;
 

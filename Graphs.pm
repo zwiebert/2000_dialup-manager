@@ -1,12 +1,12 @@
 package Graphs;
-## $Id$
+## $Id: Graphs.pm,v 1.4 2000/08/30 22:52:05 bertw Exp $
 
 use strict;
 
 BEGIN {
     use Exporter   ();
     use vars       qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-    $VERSION = do { my @r = (q$Revision: 1.3 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    $VERSION = do { my @r = (q$Revision: 1.4 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
     @ISA         = qw(Exporter);
     @EXPORT      = qw(&add_graphs &steigung &extend_graphs);
     %EXPORT_TAGS = ( );

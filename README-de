@@ -1,0 +1,101 @@
+
+                TkDialup - Dialup Frontend mit Kostenkontrolle
+                                       
+Beschreibung
+
+   TkDialup soll Sie bei der Einwahl zum jeweils kostengünstigsten
+   Internet Provider unterstützen. Diesem Zweck dient die Anzeige von
+   Minutenpreisen und verschiedenen Zeit/Kosten Diagrammen ([1]Bild).
+   
+   Während und nach Ende einer Verbindung werden die momentanen Kosten
+   für jeden Provider angezeigt ([2]Bild). Dieses hilft besonders bei
+   Providern mit längeren Gebühren-Einheiten oder zusätzlichen
+   Einwahl-Gebühren.
+   
+   Bei Providern mit langem Gebühren-Takt zeigt TkDialup den Ablauf der
+   Gebühren-Einheit mit einem Progress-Balken an. Eine automatische
+   Trennung zum Ende der Gebühren-Einheit ist möglich. So kann z.B. die
+   verbliebende "kostenlose" Zeit für fortsetzbare Downloads benutzt
+   werden.
+   
+   TkDialup speichert Verbindungsdaten und kann mit deren Hilfe die
+   aufgelaufenen Kosten in Sekundenschnelle berechnen und tabellarisch
+   anzeigen ([3]Bild).
+   
+   TkDialup eignet sich gut um gelegentlichen Rechner-Mitbenutzern eine
+   problemlose Internet Einwahl zu bieten. Sind die Mitbenutzer
+   vertrauenswürdig, so lässt sich auch eine Kostenerstattung anhand der
+   oben erwähnten Kosten-Tabelle kinderleicht durchführen
+   
+   TkDialup bietet keine Unterstützung beim Konfigurieren des pppd oder
+   von chat-Skripts. Dies erscheint mir nicht sinnvoll, da TkDialup im
+   Prinzip auch leicht für andere PPP software angepasst werden kann.
+   Tatsächlich wurde das Programm anfänglich von mir ausschließlich mit
+   User-PPP auf OpenBSD und später FreeBSD benutzt
+     _________________________________________________________________
+   
+Anforderungen
+
+     * Perl
+     * Perl/Tk
+     * UNIX oder MS-Windows Betriebssystem (wobei letzteres nocht nicht
+       voll unterstützt wird
+     * Bei Benutzung eines UNIX Systems:
+          + pppd (wenn nicht pppd benutzt wird, dann muss
+            "status_reader.pl" angepasst werden)
+          + Shell Kommandos für PPP Connect/Disconnect (z.B. pon/poff auf
+            Debian-GNU/Linux)
+          + root Privilegien zum Installieren
+     _________________________________________________________________
+   
+Status
+
+   Einige Teile dieses Projekts sind noch unvollendet. Besonders erwähnen
+   möchte ich hier:
+     * Die Dokumentation ist noch nicht ausreichend
+     * Konfigurations-Editoren fangen Eingabefehler meistens nicht ab.
+     * MS-Windows:
+          + Sprechblasen über Menüitems funktionieren nicht.
+          + Der mitgelieferte "w32ras"-Dialer ist noch sehr provisorisch
+     _________________________________________________________________
+   
+Feedback
+
+   Autor: Bert Winkelmann [4]<bertw@gmx.net>
+     _________________________________________________________________
+   
+Downloads
+
+   Da ich zur Zeit beinahe täglich neue Versionen erstelle, können Sie
+   die aktuelle Version unter folgenden gleichbleibenden URLs downloaden:
+     * Allgemeine Unix Distribution: [5]tkdialup.tar.gz
+     * Debian-GNU/Linux-Package: [6]tkdialup.deb
+     * MS-Windows95 Distribution, selbstinstallierend (empfohlen):
+       [7]tkdialup.exe
+     * MS-Windows95 ZIP Archive (ohne Installer!): [8]tkdialup.zip
+     _________________________________________________________________
+   
+Links
+
+     * [9]ActivePerl - ActiveStates Perl Distribution für MS-Windows,
+       Linux und Solaris
+     * [10]TkDialup Online Sourcen aufbereitet, zur direkten Anzeige im
+       Browser.
+       
+     _________________________________________________________________
+   
+   [[11]Home]
+
+References
+
+   1. http://home.tiscalinet.de/bertw/images/ss_tkdialup_graph15.jpg
+   2. http://home.tiscalinet.de/bertw/images/ss_tkdialup_main.jpg
+   3. http://home.tiscalinet.de/bertw/images/ss_tkdialup_stat.jpg
+   4. mailto:bertw@gmx.net
+   5. http://homepages.compuserve.de/bwinkelmann/proj/tkdialup/tkdialup.tar.gz
+   6. http://homepages.compuserve.de/bwinkelmann/proj/tkdialup/tkdialup.deb
+   7. http://homepages.compuserve.de/bwinkelmann/proj/tkdialup/tkdialup.exe
+   8. http://homepages.compuserve.de/bwinkelmann/proj/tkdialup/tkdialup.zip
+   9. http://www.activestate.com/Products/ActivePerl/
+  10. http://homepages.compuserve.de/bwinkelmann/proj/tkdialup/index.html
+  11. http://home.tiscalinet.de/bertw/index.html

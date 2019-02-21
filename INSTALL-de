@@ -1,0 +1,61 @@
+Installationshinweise für TkDialup
+==================================
+
+
+=== Allgemeines ===
+
+Zum Installieren benötigen Sie unbedingt SuperUser (root) Privilegien
+auf Ihrem UNIX-Computer.  Dies ist unumgänglich, weil ein lesender
+Zugriff auf die lesegeschütze Log-Datei von pppd(1) erforderlich ist.
+Dieser Zugriff erfolgt durch das kleine setuid-Skript
+"status_reader.pl".
+
+Perl-5, Perl/Tk und X11 müssen auf Ihrem System installiert sein,
+damit TkDialup ablaufen kann.
+
+Sollte der pppd seine Log-Mitteilungen nicht entweder nach
+/var/log/ppp.log oder /var/log/syslog schreiben so tragen Sie bitte
+die für Ihr System richtige Logdatei in die Datei "status_reader.pl"
+ein. Achtung: Evtl. ist nach dem Edieren ein Wiederherstellen der
+Datei-Attribute mittels:
+  # chmod 04755 status_reader.pl
+nötig.  Sie müssen chmod dabei als root aufrufen.
+
+
+
+=== Debian GNU/Linux ===
+
+  $ su -c "apt-get install perl-tk"              # falls perl-tk nicht bereits installiert
+  $ su -c "make dist.deb && dpkg -i dist.deb"
+
+
+=== Sonstige GNU/Linux Systeme [untested] ===
+
+  $ su -c "make install"
+
+
+=== *BSD Systems mit pppd [untested] ===
+
+  $ su -c "make install"
+
+
+=== *BSD mit User-PPP [not working] ===
+
+  FÜr *BSD Systeme die statt pppd(1) das sogenannte user-ppp benutzen,
+  wäre erst eine Anpassung des status_reader.pl Programms
+  nötig. (btw: Ursprünglich hatte ich unter OpenBSD/FreeBSD den PPP status via
+  Socket abgefragt.  Leider wurde für jede dieser Abfragen ein Eintrag
+  in das ppp-Logfile gemacht.  Ein scannen des Logfiles ist vmtl. doch die
+  bessere Lösung)
+
+
+=== Feedback ====
+
+Teilen Sie mir bitte nach Möglichkeit mit, welche Änderungen an
+TkDialup für Ihr System erforderlich waren.  Ich werde diese
+Änderungen dann nach Möglichkeit in die nächste Release von TkDialup
+integrieren.
+
+Vielen Dank.
+
+Bert Winkelmann (bertw@gmx.net)

@@ -1,0 +1,53 @@
+INSTALLATION
+
+=== General ===
+
+To be able to install this package on your UNIX system, you will need
+super-user (root) privilegs.  That's required, because TkDialup needs
+to read from a protected logfile (/var/log/ppp.log or similar).  There
+is a small setuid-script "status-reader.pl" which does the actual log
+file scanning.
+
+Please note that Perl-5, Perl/Tk and X11 have to be installed on your
+system, or TkDialup will not work.
+
+You may need to edit "status-reader.pl" if pppd does not send its log
+messages to neither /var/log/ppp.log nor /var/log/syslog.  After
+your editing is done, you may have to restore file permissions:
+  # chmod 04755 status_reader.pl
+You have to be root to do this.
+
+
+=== Debian GNU/Linux ===
+
+  $ su -c "apt-get install perl-tk"  # if perl/tk not already installed
+  $ su -c "make dist.deb && dpkg -i dist.deb"
+
+
+=== Other GNU/Linux Systeme [untested] ===
+
+  $ su -c "make install"
+
+
+=== *BSD Systems using pppd for outgoing PPP [untested] ===
+
+  $ su -c "make install"
+
+
+=== *BSD using User-PPP/tunnel-device [currently not working] ===
+
+  If you prefer to use so called User-PPP to connect to your ISP, you
+  most probably need to adapt "status_reader.pl".  That is required,
+  because "status_reader.pl" scans for PPP logfile mesages, which may
+  look slightly different on pppd(1) for which "status_reader.pl" was
+  written.
+
+=== Feedback ====
+
+Please tell me about required changes to let TkDialup work on your
+system.  I am going to try to integrate thoose changes into the
+upcoming releases then.
+
+Thanks.
+
+Bert Winkelmann <bertw@gmx.net>

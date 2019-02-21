@@ -7,12 +7,19 @@
 #include <stdio.h>
 
 
-#if 0
+#define DEBUG 0
+
+#if DEBUG
 #define db_trace puts
 #define db_tracef(x) printf x
+char db_msg_buf[256];
+#define EXP1 1
+#define EXP2 1
 #else
 #define db_trace(x)
 #define db_tracef(x)
+#define EXP1 0
+#define EXP2 1 /* required for W2K because it does not call me back */
 #endif
 
 #define USE_SOCKETS
@@ -97,30 +104,30 @@ struct dm_msg msg_template;
 /* =========================================== */
 int parse_data_file (const char *file);
 void set_state (int state);
-static void update_state_by_rc_state ();
+static void update_state_by_rc_state (void);
 void rd_callback(UINT unMsg, RASCONNSTATE rasconnstate, DWORD dwError);
 struct peer *get_peer (const char *name);
 int make_recv_socket (struct sockaddr_in *sn);
-int init_sockets ();
+int init_sockets (void);
 int recv_msg (struct msg *msg);
 int recv_dm_msg (struct dm_msg *msg);
 int poll_socket (int poll_type);
 int reply_dm_msg (struct dm_msg *msg);
 int handle_login (struct dm_msg *msg);
-void tick_state ();
-void tick ();
-void dispatch ();
+void tick_state (void);
+void tick (int slow);
+void dispatch (void);
 void Usage(char *programName);
 int HandleOptions(int argc,char *argv[]);
 int cmd_ignore (void *p);
 int cmd_dialup (void *p);
 int cmd_hangup (void *p);
 int cmd_quit (void *p);
-void update_state ();
+void update_state (void);
 int cmd_status (void *p);
-void hangup ();
-void init ();
-void cleanup ();
+void hangup (void);
+void init (void);
+void cleanup (void);
 int main (int ac, char **av);
 
 int parse_data_file (const char *file)
@@ -136,12 +143,15 @@ int parse_data_file (const char *file)
 			peers[peer_cnt].passwd,
 			peers[peer_cnt].phone_number)) != EOF) {
 
+      /* Ignore lines with less than two fields. Skip comments */
+      if (rc < 2 || peers[peer_cnt].name[0] == '#')
+	continue;
+
       if (strcmp (peers[peer_cnt].login, ".") == 0) peers[peer_cnt].login[0] = '\0';
       if (strcmp (peers[peer_cnt].passwd, ".") == 0) peers[peer_cnt].passwd[0] = '\0';
       if (strcmp (peers[peer_cnt].phone_number, ".") == 0) peers[peer_cnt].phone_number[0] = '\0';
       
-      if (rc >= 2) /* we must have at least .name and .dun_name */
-	++peer_cnt;
+      ++peer_cnt;
     }
     fclose (in);
     return 0;
@@ -157,9 +167,12 @@ void set_state (int state)
 #undef set_state
 }
 
-static void update_state_by_rc_state ()
+static void update_state_by_rc_state (void)
 {
+#if DEBUG
   puts ("trace update_state_by_rc_state ()");
+  sprintf(db_msg_buf, "rc-state: %d\n", (int)rc_state);
+#endif
   switch (rc_state) {
   case RASCS_ConnectDevice:
     set_state (STATE_dialing);
@@ -176,8 +189,18 @@ static void update_state_by_rc_state ()
 
 void rd_callback(UINT unMsg, RASCONNSTATE rasconnstate, DWORD dwError)
 {
+#if 1
   if (unMsg != WM_RASDIALEVENT)
     return;
+#endif
+  if (dwError) {
+    /* TODO */
+    db_tracef(("dwError=%d\n", (int)dwError));
+#if DEBUG
+    RasGetErrorString (dwError, db_msg_buf, sizeof db_msg_buf);
+#endif
+    return;
+  }
   if (rc_state != rasconnstate) {
     rc_state = rasconnstate;
     update_state_by_rc_state ();
@@ -380,10 +403,16 @@ void tick_state ()
  SLOW is set, this tick() was called from a timer but. */
 void tick (int slow)
 {
-  db_trace("tick()");
+  //  db_trace("tick()");
   if (slow) {
     tick_state();
   }
+#if EXP1
+  if (*db_msg_buf) {
+    fputs(db_msg_buf, stderr);
+    *db_msg_buf = 0;
+  }
+#endif /* EXP1 */
 }
 
 /*** Mesage Processing ***/
@@ -584,7 +613,11 @@ int cmd_dialup (void *p)
     fprintf(stderr, "unknown peer <%s>\n", (const char *)p);
     //    set_state (STATE_offline); // XXX
   } else {
+#if 1
     dial_params.dwSize = 1052;  /* XXX-bw/8-Sep-00 stupid Windows95 */
+#else
+    dial_params.dwSize = sizeof dial_params;
+#endif
     lstrcpy (dial_params.szEntryName, peer->dun_name);
     lstrcpy (dial_params.szUserName, peer->login);
     lstrcpy (dial_params.szPassword, peer->passwd);
@@ -625,17 +658,26 @@ int cmd_quit (void *p)
 void update_state ()
 {
   int error;
+  db_tracef(("trace: update_state()\n"));
+
+#if EXP2
+  if (ras_conn)
+#else
   if (ras_conn && curr_state == STATE_online)
+#endif
     if (!(error=RasGetConnectStatus (ras_conn, &rc_status))) {
+      db_tracef(("connect_status = %d\n", (int)rc_status.rasconnstate));
       if (rc_state != rc_status.rasconnstate) {
 	rc_state=rc_status.rasconnstate;
 	update_state_by_rc_state ();
       }
     } else if (error == ERROR_INVALID_HANDLE) {
       rc_state=RASCS_Disconnected; /* XXX */
+      db_tracef(("ERROR: invalid handle\n"));
       update_state_by_rc_state ();
     } else {
       char buf[256];
+      db_tracef(("ERROR: ...\n"));
       RasGetErrorStringA(error, buf, sizeof buf);
       fprintf (stderr, "Error %d: %s\n", error, &buf);
     }

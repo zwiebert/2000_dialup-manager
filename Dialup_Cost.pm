@@ -1,13 +1,14 @@
 package Dialup_Cost;
-## $Id: Dialup_Cost.pm,v 1.3 2000/09/03 21:58:56 bertw Exp bertw $
+## $Id: Dialup_Cost.pm,v 1.4 2000/10/04 18:29:51 bertw Exp bertw $
 
 use strict;
 use Time::Local;
+use Utils;
 
 BEGIN {
     use Exporter   ();
     use vars       qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
-    $VERSION = do { my @r = (q$Revision: 1.3 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
+    $VERSION = do { my @r = (q$Revision: 1.4 $ =~ /\d+/g); sprintf "%d."."%02d" x $#r, @r };
     @ISA         = qw(Exporter);
     @EXPORT      = qw();
     %EXPORT_TAGS = ( );
@@ -17,27 +18,22 @@ use vars      @EXPORT_OK;
 use vars qw($offs_pfg_per_clock $offs_secs_per_clock $offs_sw_start_time
 	    $offs_pfg_per_connection $offs_rate_id $locale_holydays);
 
-# initialize package globals, first exported ones
-
-
 # then the others (which are still accessible as $Some::Module::stuff)
-($offs_pfg_per_clock, $offs_secs_per_clock, $offs_sw_start_time, $offs_pfg_per_connection, $offs_rate_id) = (0,1,2,3,4,5,6,7,8,9);
+($offs_pfg_per_clock, $offs_secs_per_clock, $offs_sw_start_time,
+ $offs_pfg_per_connection, $offs_rate_id) = (0..9);
 
-$locale_holydays=undef; # set by user
+# space-seperated holydays in a string like '\d{4}-(easter+50d) \d{4}-01-01'
+$locale_holydays=undef; # set by user module
 
-# all file-scoped lexicals must be created before
-# the functions below that use them.
-my $tarif_data_af;
-my $tarif_data_ff;
-
-# file-private lexicals go here
-my $days_per_week = 7;
-my $hours_per_day = 24;
-my $mins_per_hour = 60;
-my $mins_per_day = $mins_per_hour * $hours_per_day;
-my $secs_per_min = 60;
-my $secs_per_hour = $secs_per_min * $mins_per_hour;
-my $secs_per_day = $secs_per_hour * $hours_per_day;
+###--------------------------------------------------------------------
+# We keep data in 2 formats: FF (file-format) and AF
+# (application-format).  FF can be edited using config editors.  AF is
+# generated from FF (compile_ff2af()) and will be not modified by
+# other code.  There is no conversion AF to FF.
+#
+my $tarif_data_af;    # application format ("read only")
+my $tarif_data_ff;    # file format
+my $tarif_attr;       # attributes like "edit-date", "author", "country"
 
 my %month_map=(Jan => 0, Feb => 1, Mar => 2, Apr => 3, May => 4, Jun => 5,
 	       Jul => 6, Aug => 7, Sep => 8, Oct => 9, Nov => 10, Dec => 11);
@@ -77,12 +73,16 @@ my $db_start_time = time ();
  sub dup_list( $ );
  sub compile_ff2af ();
  sub read_list( $ );
- sub read_data2( $ );
+ sub escape_string( $ );
+ sub unescape_string( $ );
+ sub parse_data( $ );
+ sub parse_data_file( $ );
  sub read_data( $ );
  sub tarif ( $$ );
  sub calc_price ( $$$ );
  sub get_rate( $ );
  sub get_pretty_rate( $ );
+ sub get_rate_attr( $ );
  sub get_rate_names();
 
 #-- begin library
@@ -105,24 +105,111 @@ sub write_list( $ ) {
     }
     $res .= '], ';
 }
+
+my $max_time = Utils::parse_ltime('2035-01-01T00:00:00');
+sub write_data__new( $ ) {
+  my ($dat) = @_;
+  my $res='';
+  while (my ($key, $val) = each (%$dat)) {
+    $$tarif_attr{$key}->{'date'} = Utils::format_gtime(Utils::db_time()) unless ($$tarif_attr{$key}->{'date'});
+    $res .= "<rate id=\"$key\" " . Utils::write_attributes ($$tarif_attr{$key}) . ">\n";
+
+    my $dup = dup_list($val);
+    foreach my $ii (@$dup) {
+      my ($times, $money) = @$ii;
+      $res .= '<row><times ';
+      if (ref $$times[0]) {
+	$res .= 'start_time="' . Utils::format_ltime ($times->[0]->[0]) . '" ' if  $times->[0]->[0];
+	$res .= 'stop_time="' . Utils::format_ltime ($times->[0]->[1]) . '" ' if  ($times->[0]->[1]
+										   and $times->[0]->[1] != $max_time);
+      }
+      if (ref $$times[1]) {
+	my $wdays = $$times[1];
+	$res .= 'days="' . join (', ' , @$wdays) . '" '; # XXX--bw/09-Oct-00: broken
+      }
+      if (ref $$times[2]) {
+	$res .= 'start_dtime="' . $times->[2]->[0] . '" ';
+	$res .= 'stop_dtime="' . $times->[2]->[1] . '" ';
+      }
+      $res .= "/><money ";
+      $res .= 'cent_per_unit="' . $money->[$offs_pfg_per_clock] . '" ';
+      $res .= 'secs_per_unit="' . $money->[$offs_secs_per_clock] . '" ';
+      $res .= 'free_connect_time="1"' unless $money->[$offs_sw_start_time];
+      $res .= 'money_per_connection="' . $money->[$offs_pfg_per_connection] . '" ' if  $money->[$offs_pfg_per_connection];
+      $res .= 'subrate_id="' . $money->[$offs_rate_id] . '" '; # XXX
+      $res .= "/></row>\n";
+    }
+    $res .= '</rate>' . "\n\n";
+  }
+  $res;
+}
+
+=pod
+sub write_data_new2( $ ) {
+  my ($dat) = @_;
+  $res='';
+  my @el;
+  while (my ($key, $val) = each (%$dat)) {
+    my ($el_name, $el_attrs, $el_content) = ('rate', [], []);
+    $$tarif_attr{$key}->{'date'} = Utils::format_gtime(Utils::db_time()) unless ($$tarif_attr{$key}->{'date'});
+    $$tarif_attr{$key}->{'id'} = $key; # force id
+
+    my $dup = dup_list($val);
+    foreach my $ii (@$dup) {
+      my ($times, $money) = @$ii;
+      $res .= '<row><times ';
+      if (ref $$times[0]) {
+	$res .= 'start_time="' . Utils::format_ltime ($times->[0]->[0]) . '" ' if  $times->[0]->[0];
+	$res .= 'stop_time="' . Utils::format_ltime ($times->[0]->[1]) . '" ' if  ($times->[0]->[1]
+										   and $times->[0]->[1] != $max_time);
+      }
+      if (ref $$times[1]) {
+	my $wdays = $$times[1];
+	$res .= 'days="' . join (', ' , @$wdays) . '" '; # XXX--bw/09-Oct-00: broken
+      }
+      if (ref $$times[2]) {
+	$res .= 'start_dtime="' . $times->[2]->[0] . '" ';
+	$res .= 'stop_dtime="' . $times->[2]->[1] . '" ';
+      }
+      $res .= "/><money ";
+      $res .= 'cent_per_unit="' . $money->[$offs_pfg_per_clock] . '" ';
+      $res .= 'secs_per_unit="' . $money->[$offs_secs_per_clock] . '" ';
+      $res .= 'free_connect_time="1"' unless $money->[$offs_sw_start_time];
+      $res .= 'money_per_connection="' . $money->[$offs_pfg_per_connection] . '" ' if  $money->[$offs_pfg_per_connection];
+      $res .= 'subrate_id="' . $money->[$offs_rate_id] . '" '; # XXX
+      $res .= "/></row>\n";
+    }
+    $res .= '</rate>' . "\n\n";
+  }
+  $res;
+}
+=cut
+
+sub write_data_ff__new() {
+  "<cost version=\"1.1\" >\n" . write_data__new($tarif_data_ff) . "</cost>\n";
+}
+
+sub write_data_ff() {
+#test#  print write_data__new($tarif_data_ff);
+  write_data ($tarif_data_ff);
+}
+sub write_data_af() {
+  write_data ($tarif_data_af);
+}
+
 sub write_data( $ ) {
     my ($dat) = @_;
     my $res='';
     while (my ($key, $val) = each (%$dat)) {
       $res .= "$key:\n";
+      $$tarif_attr{$key}->{'date'} = Utils::format_gtime(Utils::db_time()) unless ($$tarif_attr{$key}->{'date'});
+      $res .= '<rate ' . Utils::write_attributes ($$tarif_attr{$key}) . "/>\n";
       my $dup = dup_list($val);
       foreach my $ii (@$dup) {
 	$res .= write_list ($ii) . "\n";
       }
     }
     $res;
-}
-
-sub write_data_ff() {
-  write_data ($tarif_data_ff);
-}
-sub write_data_af() {
-  write_data ($tarif_data_af);
 }
 
 sub test_over_midnight( $ ) {
@@ -200,42 +287,130 @@ sub read_list( $ ) {
 	    $$res[$#$res+1] = timelocal($6, $5, $4, $3, $2 - 1, $1 - 1900) # calendar date
 	} elsif ($$in =~ s/^(\w+), //) {
 	    $$res[$#$res+1] = $1;              # string
+	} elsif ($$in =~ s/^([\~\!]), //) {
+	    $$res[$#$res+1] = $1;              # boolean operator
 	} else {
 	    last;                              # handle this line in caller because it's not a list
 	}
     }
     $res;
 }
-sub read_data2( $ ) {
+
+sub parse_data( $ ) {
     my ($in) = @_;
     my %res;
+    my %attr;
 
     while ($in) {
 	if ($in =~ s/^([A-Z_a-z0-9-]+):\n//) {
-	    $res{$1} = read_list (\$in);
+	  my $rate=$1;
+	  my $tmp = Utils::read_element (\$in);;
+	  my ($name, $attrs, $content) = @$tmp;
+	  $attr{$rate} = $attrs;
+	  $attr{$rate}->{'id'} = $rate;
+	  $res{$rate} = read_list (\$in);
 	} else {
 	    last;
 	}
     }
-    \%res;
+    (\%res, \%attr);
 }
-sub read_data( $ ) {
-    my ($file) =@_;
-    my $data='';
-    # slurp in data file
-    if (open IN, ($file)) {
-	while (<IN>) {
-	    $data .= $_;
-	}
-	close IN;
-    } else {
-	die "error: cannot open file <$file>\n";
+
+# find rates in NA (new attribs) which are older than its corrosponding rates in
+# OA (old attribs)
+sub test_1( $$ ) {
+  my ($oa, $na)=@_;
+  my $keys = (Utils::find_common_keys($oa, $na))[1];
+  my @res;
+  foreach my $key (@$keys) {
+    if (defined $oa->{$key}->{'date'}
+	and defined $na->{$key}->{'date'}) {
+      if (Utils::parse_gtime ($na->{$key}->{'date'}) 
+	  < Utils::parse_gtime ($oa->{$key}->{'date'})) {
+	$res[++$#res] = $key;
+      }
     }
-    # parse data
-    my $res = read_data2 ($data);
-#    $tarif_data_af = $res;
-    $tarif_data_ff=$res;
-    compile_ff2af ();
+  }
+  @res;
+}
+
+sub attr_compare_dates( $$ ) {
+  my ($lhs, $rhs)=@_;
+  if (defined $lhs->{'date'} and defined $rhs->{'date'}) {
+    return (Utils::parse_gtime ($lhs->{'date'}) <=> Utils::parse_gtime ($rhs->{'date'}));
+  }
+  return undef;
+}
+
+sub attr_test_update( $$ ) {
+  my ($name, $attrs)=@_;
+  Utils::db_trace("attr_test_update ($name, $attrs)");
+  if (defined $$tarif_attr{$name}) {
+    my $res = attr_compare_dates ($attrs, $tarif_attr->{$name});
+    unless (defined $res) {
+      # if we have only one 'date' field, the hash without one is considered older
+      return 1 if defined $attrs->{'date'};
+      return -1 if defined $tarif_attr->{$name}->{'date'};
+    }
+    return $res;
+  }
+  return undef;
+}
+
+sub find_updatable_rates( $ ) {
+  my ($data, $attr) = parse_data_file (shift);
+  my %result;
+  foreach my $key (keys (%$data)) {
+    if (defined $attr->{$key} and defined $tarif_attr->{$key}
+	and attr_test_update ($key, $attr->{$key}) == 1) {
+      $result{$key} = [ $attr->{$key}, $data->{$key} ];
+      Utils::db_trace("updateable rate: $key\n");
+    }
+  }
+  \%result;
+}
+sub find_updatable_rate_names( $ ) {
+  my ($data, $attr) = parse_data_file (shift);
+  my @result;
+  foreach my $key (keys (%$data)) {
+    if (defined $attr->{$key} and defined $tarif_attr->{$key}
+	and attr_test_update ($key, $attr->{$key}) == 1) {
+      push @result, $key;
+      Utils::db_trace("updateable rate: $key\n");
+    }
+  }
+  @result;
+}
+
+sub parse_data_file( $ ) {
+  my ($file) =@_;
+  my $data='';
+  # slurp in data file
+  if (open IN, ($file)) {
+    while (<IN>) {
+      $data .= $_;
+    }
+    close IN;
+  } else {
+    die "error: cannot open file <$file>\n";
+  }
+  # parse data
+  return parse_data ($data);
+}
+
+sub read_data( $ ) {
+  ($tarif_data_ff, $tarif_attr) = parse_data_file (shift);
+  compile_ff2af ();
+#test# my @tmp = find_updatable_rate_names ("/home/bertw/tmp/.dialup_cost.data"); print "@tmp\n"; exit;
+#test#  my $res = attr_test_update ("NGI_IBC", { ddate => "2000-10-07" });  print $res, "\n" if defined $res; exit;
+#test#
+=pod
+  my $tmp = find_updatable_rates ("/home/bertw/tmp/.dialup_cost.data");
+  while (my ($key, $val) = each (%$tmp)) {
+    add_pretty_rate ($key, $$val[1], $$val[0]);
+    print "---->$key<---\n";
+  }
+=cut
 }
 
 sub tarif ( $$ ) {
@@ -259,15 +434,18 @@ sub tarif ( $$ ) {
 	    ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime ($time) unless defined $sec;
 	    my $wdiv = $$iv[1];
 	    my $week_day_found=0;
+	    my $negate=0;
 	    foreach my $wd (@$wdiv) {
-	      if ($wd =~ /[HW]/) {
+	      if ($wd =~ /[\!\~]/) {
+		$negate = !$negate;
+	      } elsif ($wd =~ /[HW]/) {
 		if (test_holyday(sprintf ("%u-%02u-%02u", $year + 1900, $mon+1, $mday))) {
-		  goto found if ($wd eq "H");
-		  next record if ($wd eq "W");
+		  goto found if (!($wd eq "H") == $negate);
+		  next record if (!($wd eq "W") == $negate);
 		}
 	      } else {
 		# remember a matching weekday but keep looking for holydays/workdays (H/W)
-		$week_day_found = 1 if ($wd == $wday);
+		$week_day_found = 1 if (not ($wd == $wday) == $negate);
 	      }
 	    }
 	    next record unless $week_day_found;
@@ -318,6 +496,7 @@ sub calc_price ( $$$ ) {
 sub delete_rate( $ ) {
   delete $$tarif_data_af{$_[0]};
   delete $$tarif_data_ff{$_[0]};
+  delete $$tarif_attr{$_[0]};
 }
 sub get_rate( $ ) {
     $$tarif_data_af{$_[0]}; # XXX
@@ -325,9 +504,20 @@ sub get_rate( $ ) {
 sub get_pretty_rate( $ ) {
     $$tarif_data_ff{$_[0]}; # XXX
 }
+sub get_rate_attr( $ ) {
+    $$tarif_attr{$_[0]}; # XXX
+}
 sub set_pretty_rate( $$ ) {
     $$tarif_data_ff{$_[0]} = $_[1];
+    $tarif_attr->{$_[0]}->{'date'} = Utils::format_gtime(Utils::db_time());
     compile_ff2af ();
+}
+# Set rate NAME consisting of DATA and ATTR.  Overwrite old content if already exists.
+sub add_pretty_rate( $$$ ) {
+  my ($name, $data, $attr)=@_;
+  $$tarif_data_ff{$name} = $data;
+  $$tarif_attr{$name} = $attr;
+  compile_ff2af ();
 }
 sub get_rate_names() {
     my @result;

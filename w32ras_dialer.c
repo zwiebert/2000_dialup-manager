@@ -37,6 +37,7 @@ int cmd_quit (void *p);
 int cmd_status (void *p);
 void hangup (void);
 VOID WINAPI rd_callback(UINT unMsg, RASCONNSTATE rasconnstate, DWORD dwError);
+static void update_state_by_rc_state (void);
 
 
 int
@@ -53,12 +54,15 @@ parse_data_file (const char *file)
 			peers[peer_cnt].passwd,
 			peers[peer_cnt].phone_number)) != EOF) {
 
+      /* Ignore lines with less than two fields. Skip comments */
+      if (rc < 2 || peers[peer_cnt].name[0] == '#')
+	continue;
+
       if (strcmp (peers[peer_cnt].login, ".") == 0) peers[peer_cnt].login[0] = '\0';
       if (strcmp (peers[peer_cnt].passwd, ".") == 0) peers[peer_cnt].passwd[0] = '\0';
       if (strcmp (peers[peer_cnt].phone_number, ".") == 0) peers[peer_cnt].phone_number[0] = '\0';
       
-      if (rc >= 2) /* we must have at least .name and .dun_name */
-	++peer_cnt;
+      ++peer_cnt;
     }
     fclose (in);
     return 0;
@@ -93,7 +97,7 @@ update_state_by_rc_state ()
   }
 }
 
-void
+VOID WINAPI
 rd_callback(UINT unMsg, RASCONNSTATE rasconnstate, DWORD dwError)
 {
   if (unMsg != WM_RASDIALEVENT)

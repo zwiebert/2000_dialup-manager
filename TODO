@@ -1,15 +1,76 @@
--*- TEXT -*-
-
-
 * BUGS
+
+** bug-bw/23-Sep-00: setlocale de_DE breaks "graph 1h ..."
+   (Tk::Error: bad screen distance "320.5" at /usr/lib/perl5/5.005/i386-linux/Tk.pm line 217.)
+
+** bug-bw/23-Sep-00: rate-editor-window: remove-row does not clear cells correctly
 
 ** bug-old: using a brute-force NTP client leads to wrong accounting
 
 ** bug-bw/01-Jul-00: installation does not keep file timestamps
 
+** bug-bw/22-Sep-00: On XFree86-4.0: A TearOff-menu does not show it
+content immidiatly.  One have to send some XEvent (like moving the
+window using the mouse).
+
 
 * TODO
 
+** todo--bw/12-Oct-00: Installing /etc/ppp/peers/TkDialup.  Ask user
+to confirm (security problem)
+
+** todo-bw/06-Oct-00: (interactive?) window showing costs for all rates, not only used ones
+
+** todo-bw/13-Sep-00: Maybe we should use sockets to communicate
+between dialer/status_reader and user interface. This would enable us
+to control the pppd on a router.
+
+** todo-bw/02-Sep-00: allow localization by users (locale in
+$HOME). Use environment to pass locale file name.
+
+** todo-bw/30-Aug-00: use one graph color per rate, but not one fore
+each peer.
+
+
+
+* DONE
+
+** todo-bw/03-Oct-00: implement updating for cost-file content. avoid
+saving content of default cost-file into user cost file.
+*** done-bw/06-Oct-00:
+
+** Catching exceptions for invalid/missing rates
+*** done-bw/04-Oct-00
+
+** Implementing holydays
+*** done-bw/04-Oct-00: holydays are specified in country-XX. Absolute and
+relative (to christian easter) holydays are possible.
+
+** Distribute default dialup_manager.cfg for windows using w32ras
+*** done-bw/21-Sep-00: pon/poff will be replaced using sed(1) at build time
+
+** tkdialup: tac(1) not available on w32
+*** done-bw/21-Sep-00: tac(1) no longer used
+
+** w32fix-bw/06-Sep-00: LOG should not stay open for write, so
+new_stat.pl can read from it.
+*** done-bw/06-Sep-00
+
+** bug-bw/06-Sep-00: Save config not possible.
+*** bugfix-bw/06-Sep-00: Initial creating of a new config file was not
+possible, because dm::write_config() wanted opening it for reading
+first.
+
+** tkdialup.pl: bug-bw/05-Sep-00 Balloon help on menus cannot be
+switched off (problem in Tk itself?)
+*** done-bw/05-Sep-00: I was using '-state' in atach() method.  This
+stated was shadowing the switched '-state'.
 
 ** todo-bw/01-Jul-00: don't show all ISPs in graph. Show only active
-   ones or use a special graph flag (bad idea).
+ones or use a special graph flag (bad idea).
+
+
+Local variables:
+mode: outline
+paragraph-separate: "[ 	]*$"
+end:

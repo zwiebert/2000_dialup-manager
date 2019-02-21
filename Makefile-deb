@@ -1,5 +1,5 @@
 prefix:=/usr/local/
-apphome=/usr/local/share/dialup_manager
+apphome=/usr/local/share/tkdialup
 bindir=$(prefix)bin
 
 
@@ -23,6 +23,7 @@ tkdialup: tkdialup.in force
 
 
 dist.deb: distrm dist/DEBIAN/postinst tkdialup force
-	$(MAKE) root=dist/ install
+	$(MAKE) root=dist/ docdir=dist/usr/local/share/doc/tkdialup install
 	$(MAKE) tkdialup && install tkdialup dist$(bindir)
-	dpkg-deb --build dist
+	chmod 755 dist/DEBIAN # XXX required since updating one of fakeroot or dpkg-deb
+	dpkg-deb --build ./dist && rm -rf dist

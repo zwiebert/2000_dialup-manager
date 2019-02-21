@@ -1,15 +1,28 @@
 #! /usr/bin/perl -w
-## $Id: tkdialup.pl,v 1.9 2000/09/10 06:50:46 bertw Exp bertw $
+## $Id: tkdialup.pl,v 1.11 2000/10/04 18:30:21 bertw Exp bertw $
 
 use strict;
 my $cfg_dir;
+my $cfg_dir_upd;
 
 BEGIN {
-  $ENV{'HOME'} = '' unless defined $ENV{'HOME'}; # windows default (current volume root)
+  unless (defined $ENV{'HOME'}) {
+    if (defined $ENV{'HOMEDRIVE'} and defined $ENV{'HOMEPATH'}) {
+      $ENV{'HOME'} = $ENV{'HOMEDRIVE'} . $ENV{'HOMEPATH'}; #Windows2000
+    } else {
+      $ENV{'HOME'} = ''; # Windows9x default (current volume root)
+    }
+  }
+#    print  $ENV{'HOME'} . "<-----home---\n"; die;
+
   $cfg_dir = $ENV{'HOME'} . "/.tkdialup";
+  $cfg_dir_upd = $cfg_dir . "/updates";
   unless (-e $cfg_dir) {
     mkdir ($cfg_dir, 0755);
     rename ($ENV{"HOME"} . "/.dialup_manager.cfg", $cfg_dir . "/app.cfg");
+  }
+  unless (-e $cfg_dir_upd) {
+    mkdir ($cfg_dir_upd, 0755);
   }
 }
 
@@ -17,6 +30,7 @@ use locale;
 use POSIX qw(locale_h);
 use dm;
 use log_stat;
+use Utils;
 use Tk;
 use Tk::ROText;
 use Tk::ProgressBar;
@@ -36,6 +50,10 @@ my %cfg_gui_default= ('.config_tag' => 'gui',
 	#	      rtc_strftime_fmt => '%c',
 		      peer_default_up_cmd => 'pon',
 		      peer_default_down_cmd => 'poff',
+		      'modem_init' => 'AT&F', # ATZ takes too long for some (?) chat programs
+		      'modem_dial_prefix' => 'ATDT',
+		      'modem_serial_device' => '/dev/ttyS1', # '/dev/modem' ?
+		      'modem_serial_bps' => 115200,
 		      lang => '.automatic');
 my %cfg_gui = %cfg_gui_default;
 $cfg_gui{'.config_default'}=\%cfg_gui_default;
@@ -120,7 +138,7 @@ my $secs_per_day = $secs_per_hour * $hours_per_day;
  sub main_window_deiconify ();
  sub mask_widget( $$$$$$$$ );
  sub pcfg_apply( $$$$ );
- sub rcfg_make_window( $$$$$ );
+ sub rcfg_make_window( $$$$$$ );
  sub rcfg_update_matrix( $$ );
  sub rcfg_make_matrix( $ );
  sub rcfg_parse_matrix( $ );
@@ -180,7 +198,7 @@ sub update_gui_dialing () {
 
 sub update_progress_bar () {
     use integer;
-    my $tem = (dm::db_time () - ($dm::time_start - $dm::ppp_offset)) % $dm::curr_secs_per_unit;
+    my $tem = (Utils::db_time () - ($dm::time_start - $dm::ppp_offset)) % $dm::curr_secs_per_unit;
     my $percent_done =  ($tem * 100) / $dm::curr_secs_per_unit;
     $pb_widget->value($percent_done);
 
@@ -220,7 +238,11 @@ sub update_gui_counter () {
 	my $price = $sum_cache{$isp};
 	my $widget=$$wid[$offs_sum_widget];
 	$widget->delete ('1.0', 'end');
-	$widget->insert('1.0', sprintf ("%4.2f Pfg", $price));
+	if ($price < 100) {
+	  $widget->insert('1.0', sprintf ("%4.2f %s", $price, $LOC{'currency_cent_symbol'}));
+	} else {
+	  $widget->insert('1.0', sprintf ("%.2f %s", ($price / 100), $LOC{'lc_currency_symbol'}));
+	}
 	my $bg_color = (($cheapest == $price) ? 'Green'
 			: (($most_expensive == $price) ? 'OrangeRed'
 #			   : 'Yellow'));
@@ -264,13 +286,13 @@ sub update_gui_rtc () {
     $rtc_widget->delete ('1.0', 'end');
     my $rtc;
   if (!defined &POSIX::strftime) {
-    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime (dm::db_time ());
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime (Utils::db_time ());
     $rtc = sprintf (" %s  %u-%02u-%02u  %02u:%02u:%02u",
 		    $wday_names[$wday],
 		    $year + 1900, $mon + 1, $mday,
 		    $hour, $min, $sec);
   } else {
-    $rtc = POSIX::strftime ($cfg_gui{'rtc_strftime_fmt'}, localtime (dm::db_time ()));
+    $rtc = POSIX::strftime ($cfg_gui{'rtc_strftime_fmt'}, localtime (Utils::db_time ()));
   }
     $rtc_widget->insert('1.0', $rtc);
 }
@@ -283,12 +305,12 @@ sub rtc_max_width () {
     }
     $max_wday_len + $rtc_time_len;
     } else {
-      length (POSIX::strftime ($cfg_gui{'rtc_strftime_fmt'}, localtime (dm::db_time ())));
+      length (POSIX::strftime ($cfg_gui{'rtc_strftime_fmt'}, localtime (Utils::db_time ())));
     }
 }
 
 sub update_gui () {
-    my $curr_time = dm::db_time();
+    my $curr_time = Utils::db_time();
     my $state = $dm::state;
 
     if ($main_widget->state eq 'normal') {
@@ -311,6 +333,7 @@ sub make_diagram( $$$$ ) {
   my ($width, $height) = ($canvas->width - 60, $canvas->height - 60);
   my ($xscale, $yscale) = ($width/$xmax, $height/$ymax); # convinience
   my ($xoffs, $yoffs) = (30, -30);
+  my $ymain = ($ymax < 50) ? 10 : 50;
 
   $canvas->delete($canvas->find('all'));
 
@@ -329,8 +352,8 @@ sub make_diagram( $$$$ ) {
   for (my $i=0; $i <= $ymax; $i+=10) {
     my $y = -($i * $yscale + $yoffs - $height);
     $canvas->createLine($xoffs, $y, $width + $xoffs,  $y,
-			-fill => ($i%50) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
-    if (($i%50) == 0) {
+			-fill => ($i%$ymain) ? $cfg_gui{'graph_nrcolor'} : $cfg_gui{'graph_ercolor'});
+    if (($i % $ymain) == 0) {
       $y=sprintf("%.0f", $y);	# canvas->createText is buggy when using a locale with "," as decimal point
       $canvas->createText(10, $y, -text => sprintf ("%0.1f", $i / 100));
     }
@@ -353,9 +376,9 @@ sub make_diagram( $$$$ ) {
   # print graphs in matching color
   foreach my $isp (reverse (@dm::isps)) {
     next unless (dm::get_isp_flag_active ($isp));
-    eval {
-      my $time=dm::db_time();
-      my $restart_x=0; 
+    do {
+      my $time=Utils::db_time();
+      my $restart_x=0;
       my $restart_y=0;
       my $part_of_previous_rate=0;
     restart: {
@@ -365,7 +388,8 @@ sub make_diagram( $$$$ ) {
 	my $flag_do_restart=0;
 	my @graphs=();
 	my @args=();
-	my @tmp = Dialup_Cost::tarif (dm::get_isp_tarif($isp), $time + $restart_x1);
+	my @tmp = eval { Dialup_Cost::tarif (dm::get_isp_tarif($isp), $time + $restart_x1) };
+	next if $@;
 	my $tar = $tmp[0];	# rate list
 	my $swp = $tmp[2];	# absolute switchpoints (time of changing rates)
 	my ($x, $y) = (0, 0);
@@ -398,7 +422,7 @@ sub make_diagram( $$$$ ) {
 	    }
 
 	  } else {
-	    # handle stair graphs (like 150 seconds per clock) ######################################
+	    # handle stair graphs (like 150 seconds per clock/unit) ######################################
 	    my @g = ($restart_x1) ? ()              : (0, $sum);
 	    my $u = ($restart_x1) ? 0               : $offs_units+1;
 	    my $i = ($restart_x1) ? $restart_x1 + 1 : $$a[$Dialup_Cost::offs_secs_per_clock]  - $offs_time;
@@ -415,7 +439,7 @@ sub make_diagram( $$$$ ) {
 	      $g[$#g+1] = $i-1;
 	      $g[$#g+1] = $#g > 1 ? $g[$#g-1] : 0;
 	      $g[$#g+1] = $i;
-	      $g[$#g+1] = $u++ * $$a[$Dialup_Cost::offs_pfg_per_clock];
+	      $g[$#g+1] = $u++ * $$a[$Dialup_Cost::offs_pfg_per_clock]  + $$a[$Dialup_Cost::offs_pfg_per_connection];
 
 	      $i+= $$a[$Dialup_Cost::offs_secs_per_clock] * (1 - $part_of_previous_rate);
 	      $part_of_previous_rate = 0;
@@ -473,16 +497,17 @@ sub make_gui_graphwindow( $$ ) {
 
     unless ($ymax) {
       my $max_cost=1;
-      my $curr_time=dm::db_time();
+      my $curr_time=Utils::db_time();
       foreach my $isp (@dm::isps) {
 	next unless (dm::get_isp_flag_active ($isp));
 	eval {
 	  my $cost = dm::predict_cost ($isp, $curr_time, $xmax);
+	  db_trace ("cost=$cost ($isp)");
 	  $max_cost = $cost if ($cost > $max_cost);
 	};
       }
       while ($ymax < $max_cost) {
-	$ymax+=50;
+	$ymax+=10;
       }
     }
 
@@ -597,47 +622,47 @@ sub make_gui_mainwindow () {
     my $balloon = $main_widget->Balloon();
     #### Menu ####
     my $menubar = $top->Frame (-relief => 'raised');
-    my $file_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_file'});
+    my $file_menu_bt = $menubar->Menubutton (-text => $LOC{'menu.main.file'});
     my $file_menu = $file_menu_bt->Menu();
     $file_menu_bt->configure (-menu => $file_menu);
-    my $edit_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_edit'});
+    my $edit_menu_bt = $menubar->Menubutton (-text => $LOC{'menu.main.edit'});
     my $edit_menu = $edit_menu_bt->Menu();
     $edit_menu_bt->configure (-menu => $edit_menu);
-    my $view_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_view'});
+    my $view_menu_bt = $menubar->Menubutton (-text => $LOC{'menu.main.view'});
     my $view_menu = $view_menu_bt->Menu();
     $view_menu_bt->configure (-menu => $view_menu);
-    my $help_menu_bt = $menubar->Menubutton (-text => $LOC{'menu_help'});
+    my $help_menu_bt = $menubar->Menubutton (-text => $LOC{'menu.main.help'});
     my $help_menu = $help_menu_bt->Menu();
     $help_menu_bt->configure (-menu => $help_menu);
 
 #    $file_menu->command (-label => 'Speichern');
-    $file_menu->command (-label => $LOC{'menu_file_hangup_now'}, -command => sub { dm::disconnect () });
+    $file_menu->command (-label => $LOC{'menu.main.file.hangup_now'}, -command => sub { dm::disconnect () });
     $file_menu->add ('checkbutton',
-		     -label =>  $LOC{'menu_file_hangup_defer'},
+		     -label =>  $LOC{'menu.main.file.hangup_defer'},
 		     -variable => \$dm::flag_stop_defer);
 
-    $file_menu->command (-label => $LOC{'menu_file_save'}, -command => sub { save_config() });
-    $file_menu->command (-label => $LOC{'menu_file_quit'}, -command => sub { dm::disconnect () ; exit });
+    $file_menu->command (-label => $LOC{'menu.main.file.save'}, -command => sub { save_config() });
+    $file_menu->command (-label => $LOC{'menu.main.file.quit'}, -command => sub { dm::disconnect () ; exit });
 
-    $edit_menu->command (-label => $LOC{'menu_edit_peer_options'}, -command => sub { pcfg_editor_window (100,200) });
-    $edit_menu->command (-label => $LOC{'menu_edit_gui_options'}, -command => sub { color_cfg_editor_window (100,200) });
-    $edit_menu->command (-label => $LOC{'menu_edit_rate_options'}, -command => sub { rcfg_editor_window (100,200) });
-    $edit_menu->command (-label => $LOC{'menu_edit_socket_options'}, -command => sub { sock_cfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu.main.edit.peer_options'}, -command => sub { pcfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu.main.edit.gui_options'}, -command => sub { color_cfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu.main.edit.rate_options'}, -command => sub { rcfg_editor_window (100,200) });
+    $edit_menu->command (-label => $LOC{'menu.main.edit.socket_options'}, -command => sub { sock_cfg_editor_window (100,200) });
 
 
 ##--- View Menu
-    $view_menu->command (-label => "$LOC{'menu_view_graph'} 5 min ...", -command => sub {make_gui_graphwindow(5 * $secs_per_min, 0) });
-    $view_menu->command (-label => "$LOC{'menu_view_graph'} 15 min ...", -command => sub {make_gui_graphwindow(15 * $secs_per_min, 0) });
-    $view_menu->command (-label => "$LOC{'menu_view_graph'} 30 min ...", -command => sub {make_gui_graphwindow(30 * $secs_per_min, 0) });
-    $view_menu->command (-label => "$LOC{'menu_view_graph'} 1 h ...", -command => sub {make_gui_graphwindow(1 * $secs_per_hour, 0) });
-#    $view_menu->command (-label => "$LOC{'menu_view_graph'} 2 h ...", -command => sub {make_gui_graphwindow(2 * $secs_per_hour, 0) });
+    $view_menu->command (-label => "$LOC{'menu.main.view.graph'} 5 min ...", -command => sub {make_gui_graphwindow(5 * $secs_per_min, 0) });
+    $view_menu->command (-label => "$LOC{'menu.main.view.graph'} 15 min ...", -command => sub {make_gui_graphwindow(15 * $secs_per_min, 0) });
+    $view_menu->command (-label => "$LOC{'menu.main.view.graph'} 30 min ...", -command => sub {make_gui_graphwindow(30 * $secs_per_min, 0) });
+    $view_menu->command (-label => "$LOC{'menu.main.view.graph'} 1 h ...", -command => sub {make_gui_graphwindow(1 * $secs_per_hour, 0) });
+#    $view_menu->command (-label => "$LOC{'menu.main.view.graph'} 2 h ...", -command => sub {make_gui_graphwindow(2 * $secs_per_hour, 0) });
     $view_menu->add ('separator');
     # Statistics
 
-    $view_menu->command (-label => $LOC{'menu_view_stat'}, -command => sub {make_gui_statwindow(0) });
+    $view_menu->command (-label => $LOC{'menu.main.view.stat'}, -command => sub {make_gui_statwindow(0) });
     {
       $view_menu->command 
-	(-label => $LOC{'menu_view_stat_filt'},
+	(-label => $LOC{'menu.main.view.stat_filt'},
 	 -command => sub
 	 {
 	   require Tk::DialogBox;
@@ -654,31 +679,31 @@ sub make_gui_mainwindow () {
     }
     ###
     $view_menu->add ('separator');
-    $view_menu->add ('checkbutton', -label => $LOC{'menu_view_clock'},
+    $view_menu->add ('checkbutton', -label => $LOC{'menu.main.view.clock'},
 		     -variable => \$cfg_gui{'show_rtc'},
 		     -command => sub { if (!defined $rtc_widget->manager) { $rtc_widget->pack(-side => 'top'); }
 				       else { $rtc_widget->packForget(); } });
 
-    $view_menu->add ('checkbutton', -label => $LOC{'menu_view_progress_bar'},
+    $view_menu->add ('checkbutton', -label => $LOC{'menu.main.view.progress_bar'},
 		     -variable => \$cfg_gui{'show_progress_bar'},
 		     -command => sub { if (!defined $pb_widget->manager) {
 			                  $pb_widget->pack(-expand => 1, -fill => 'x');
 				       } else { $pb_widget->packForget(); } });
 
-    $view_menu->add ('checkbutton', -label => $LOC{'menu_view_disconnect_button'},
+    $view_menu->add ('checkbutton', -label => $LOC{'menu.main.view.disconnect_button'},
 		     -variable => \$cfg_gui{'show_disconnect_button'},
 		     -command => sub { if (!defined $disconnect_button->manager) {
 			                  $disconnect_button->pack(-expand => 1, -fill => 'x');
 				       } else { $disconnect_button->packForget(); } });
 ##---- Help Menu
-    $help_menu->add ('checkbutton', -label => $LOC{'menu_help_balloon_help'},
+    $help_menu->add ('checkbutton', -label => $LOC{'menu.main.help.balloon_help'},
 		     -variable => \$cfg_gui{'balloon_help'},
 		     -command => sub {
 			 $balloon->configure(-state => ($cfg_gui{'balloon_help'} ? 'balloon' : 'none')); });
     $balloon->configure(-state => ($cfg_gui{'balloon_help'} ? 'balloon' : 'none'));
 
     $help_menu->add ('separator');
-    $help_menu->command (-label => $LOC{'menu_help_about'}, -command => sub {make_gui_aboutwindow() });
+    $help_menu->command (-label => $LOC{'menu.main.help.about'}, -command => sub {make_gui_aboutwindow() });
     $help_menu->command (-label => "Copyright ...", -command => sub {make_gui_textwindow("$progdir/COPYRIGHT", "$APPNAME: Copyright") });
     my $lang_menu = $help_menu->Menu();
     while (my ($key, $val) = each (%langs)) {
@@ -719,42 +744,42 @@ sub make_gui_mainwindow () {
 
     $balloon->attach($file_menu,
 		     -msg => ['',
-			      $LOC{'menu_file_hangup_now.help'},
-			      $LOC{'menu_file_hangup_defer.help'},
-			      $LOC{'menu_file_save.help'},
-			      $LOC{'menu_file_quit.help'},
+			      $LOC{'menu.main.file.hangup_now.help'},
+			      $LOC{'menu.main.file.hangup_defer.help'},
+			      $LOC{'menu.main.file.save.help'},
+			      $LOC{'menu.main.file.quit.help'},
 			      ],
                      );
     $balloon->attach($edit_menu,
 		     -msg => ['',
-			      $LOC{'menu_edit_peer_options.help'},
-			      $LOC{'menu_edit_gui_options.help'},
-			      $LOC{'menu_edit_rate_options.help'},
-			      $LOC{'menu_edit_options.help'},
-			      $LOC{'menu_edit_socket_options.help'},
+			      $LOC{'menu.main.edit.peer_options.help'},
+			      $LOC{'menu.main.edit.gui_options.help'},
+			      $LOC{'menu.main.edit.rate_options.help'},
+			      $LOC{'menu.main.edit.options.help'},
+			      $LOC{'menu.main.edit.socket_options.help'},
 			      ],
                      );
     $balloon->attach($view_menu,
 		     -msg => ['',
-			      $LOC{'menu_view_graph.help'},
-			      $LOC{'menu_view_graph.help'},
-			      $LOC{'menu_view_graph.help'},
-			      $LOC{'menu_view_graph.help'},
+			      $LOC{'menu.main.view.graph.help'},
+			      $LOC{'menu.main.view.graph.help'},
+			      $LOC{'menu.main.view.graph.help'},
+			      $LOC{'menu.main.view.graph.help'},
 			      '',
-			      $LOC{'menu_view_stat.help'},
-			      $LOC{'menu_view_stat_filt.help'},
+			      $LOC{'menu.main.view.stat.help'},
+			      $LOC{'menu.main.view.stat_filt.help'},
 			      '',
-			      $LOC{'menu_view_clock.help'},
-			      $LOC{'menu_view_progress_bar.help'},
-			      $LOC{'menu_view_disconnect_button.help'},
+			      $LOC{'menu.main.view.clock.help'},
+			      $LOC{'menu.main.view.progress_bar.help'},
+			      $LOC{'menu.main.view.disconnect_button.help'},
 			      ,
 			      ],);
 
     $balloon->attach($help_menu,
 		     -msg => ['',
-			      $LOC{'menu_help_balloon_help.help'},
+			      $LOC{'menu.main.help.balloon_help.help'},
 			      '',
-			      $LOC{'menu_help_about.help'},
+			      $LOC{'menu.main.help.about.help'},
 			      ],
                      );
 
@@ -780,13 +805,13 @@ sub make_gui_mainwindow () {
 
 	unless ($usepack) {
 	    my $label;
-	    $label=$button_frame->Label(-text => $LOC{'win_main_start'})->grid(-row => $row, -column => 0);
-	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_start.help'}) if $balloon;
-	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_start.help'}) if $balloon;
-	    $label=$button_frame->Label(-text => $LOC{'win_main_money'})->grid(-row => $row, -column => 1);
-	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_money.help'}) if $balloon;
-	    $label=$button_frame->Label(-text => $LOC{'win_main_rate'})->grid(-row => $row, -column => 2);
-	    $balloon->attach($label, -balloonmsg => $LOC{'win_main_rate.help'}) if $balloon;
+	    $label=$button_frame->Label(-text => $LOC{'win.main.start'})->grid(-row => $row, -column => 0);
+	    $balloon->attach($label, -balloonmsg => $LOC{'win.main.start.help'}) if $balloon;
+	    $balloon->attach($label, -balloonmsg => $LOC{'win.main.start.help'}) if $balloon;
+	    $label=$button_frame->Label(-text => $LOC{'win.main.money'})->grid(-row => $row, -column => 1);
+	    $balloon->attach($label, -balloonmsg => $LOC{'win.main.money.help'}) if $balloon;
+	    $label=$button_frame->Label(-text => $LOC{'win.main.rate'})->grid(-row => $row, -column => 2);
+	    $balloon->attach($label, -balloonmsg => $LOC{'win.main.rate.help'}) if $balloon;
 	    $row++;
 	}
 
@@ -841,7 +866,7 @@ sub make_gui_mainwindow () {
     }
     {
 	my $frame = $top->Frame;
-	$disconnect_button = $frame->Button(-text => "$LOC{'button_main_hangup'}", -command => sub{dm::disconnect});
+	$disconnect_button = $frame->Button(-text => "$LOC{'win.main.hangup'}", -command => sub{dm::disconnect});
 	$balloon->attach($disconnect_button, -balloonmsg => 'Disconnect immediatly by issuing "Down Cmd"') if $balloon;
 	my $b2 = $frame->Button(-text => 'Graph', -command => sub{make_gui_graphwindow(30 * $secs_per_min, 200)});
 	my $b3 = $frame->Button(-text => 'Exp-Graph', -command => sub{exp_make_gui_graphwindow()});
@@ -1019,8 +1044,8 @@ sub pcfg_apply( $$$$ ) {
 }
 
 # TODO: TAB switching order
-sub rcfg_make_window( $$$$$ ) {
-  my ($parent, $rate, $matrix, $entries, $balloon) = @_;
+sub rcfg_make_window( $$$$$$ ) {
+  my ($parent, $rate, $matrix, $entries, $balloon, $editable) = @_;
   my $labels=$$matrix[0];
   my $balloons=$$matrix[2];
   my $fmts=$$matrix[1];
@@ -1068,6 +1093,10 @@ sub rcfg_make_window( $$$$$ ) {
     }
   }
 
+  # if not editable we don't want any buttos and empty rows
+  return $top unless ($editable);
+
+  # make empty rows
   foreach my $wr ($rows..$rows+5) {
     my $r=$wr + $start_matrix;
     for (my $c=0; $c < $cols; $c++) {
@@ -1089,6 +1118,7 @@ sub rcfg_make_window( $$$$$ ) {
     }
   }
 
+  # make buttons
   my $button_frame = $top->Frame;
   $button_frame->pack(-side => 'bottom');
   $button_frame->Button(-text => 'Remove Row',
@@ -1103,11 +1133,10 @@ sub rcfg_make_window( $$$$$ ) {
 			-command => sub {
 			  rcfg_append_row ($matrix, \@rcfg_widgets);
 			})->pack(-side => 'left');
-  $button_frame->Button(-text => 'Save+Close',
+  $button_frame->Button(-text => 'Use+Close',
 			-command => sub {
 			  rcfg_update_matrix($matrix, \@rcfg_widgets);
 			  Dialup_Cost::set_pretty_rate ($rate, rcfg_parse_matrix ($matrix));
-			  dm::save_cost_data();
 			  $parent->destroy })->pack();
   $top;
 }
@@ -1142,43 +1171,42 @@ sub rcfg_update_matrix( $$ ) {
 ## create data table for cost preferece window (rcfg_make_window())
 ## 1st row are labels.  2nd row are data-type-IDs.  In 3rd row starts data.
 sub rcfg_make_matrix( $ ) {
-    my ($rate_name) = @_;
-    my @labels = ($LOC{'win_rate_date_start'},
-		  $LOC{'win_rate_date_end'},
-		  $LOC{'win_rate_weekdays'},
-		  $LOC{'win_rate_daytime_start'},
-		  $LOC{'win_rate_daytime_end'},
-		  $LOC{'win_rate_money_per_min'},
-		  $LOC{'win_rate_secs_per_unit'},
-		  $LOC{'win_rate_money_per_connect'},
-		  $LOC{'win_rate_free_linkup'},
-		  $LOC{'win_rate_overlay_rate'},
+    my ($rate) = @_;
+    my @labels = ($LOC{'win.rate.date_start'},
+		  $LOC{'win.rate.date_end'},
+		  $LOC{'win.rate.weekdays'},
+		  $LOC{'win.rate.daytime_start'},
+		  $LOC{'win.rate.daytime_end'},
+		  $LOC{'win.rate.money_per_min'},
+		  $LOC{'win.rate.secs_per_unit'},
+		  $LOC{'win.rate.money_per_connect'},
+		  $LOC{'win.rate.free_linkup'},
+		  $LOC{'win.rate.overlay_rate'},
 		  );
-    my @balloons = ($LOC{'win_rate_date_start.help'},
-		    $LOC{'win_rate_date_end.help'},
-		    $LOC{'win_rate_weekdays.help'},
-		    $LOC{'win_rate_daytime_start.help'},
-		    $LOC{'win_rate_daytime_end.help'},
-		    $LOC{'win_rate_money_per_min.help'},
-		    $LOC{'win_rate_secs_per_unit.help'},
-		    $LOC{'win_rate_money_per_connect.help'},
-		    $LOC{'win_rate_free_linkup.help'},
-		    $LOC{'win_rate_overlay_rate.help'},
+    my @balloons = ($LOC{'win.rate.date_start.help'},
+		    $LOC{'win.rate.date_end.help'},
+		    $LOC{'win.rate.weekdays.help'},
+		    $LOC{'win.rate.daytime_start.help'},
+		    $LOC{'win.rate.daytime_end.help'},
+		    $LOC{'win.rate.money_per_min.help'},
+		    $LOC{'win.rate.secs_per_unit.help'},
+		    $LOC{'win.rate.money_per_connect.help'},
+		    $LOC{'win.rate.free_linkup.help'},
+		    $LOC{'win.rate.overlay_rate.help'},
 		    );
     my @matrix;
     $matrix[$#matrix+1] = \@labels;
     $matrix[$#matrix+1] = ['cstring:10','cstring:10','cstring:10','cstring:8',
 			   'cstring:8','cstring:5','cstring:4','cstring:4', 'checkbox', 'checkbox'];
     $matrix[$#matrix+1] = \@balloons;
-    my $rate = Dialup_Cost::get_pretty_rate ($rate_name);
     foreach my $r (@$rate) {
 	my @sub_entries = ("","","","","","","","");
 	my $r0 = $$r[0];
 
 	if (ref $$r0[0]) {
 	    my $r00 = $$r0[0];
-	    $sub_entries[0] = ($$r00[0] == 0) ? "0" : substr (dm::format_ltime ($$r00[0]), 0, 19);
-	    $sub_entries[1] = ($$r00[1] == 0) ? "0" : substr (dm::format_ltime ($$r00[1]), 0, 19);
+	    $sub_entries[0] = ($$r00[0] == 0) ? "0" : substr (Utils::format_ltime ($$r00[0]), 0, 19);
+	    $sub_entries[1] = ($$r00[1] == 0) ? "0" : substr (Utils::format_ltime ($$r00[1]), 0, 19);
 	}
 	if (ref $$r0[1]) {
 	    my $r01 = $$r0[1];
@@ -1363,15 +1391,15 @@ sub rcfg_parse_matrix( $ ) {
 	my @res_cond=(0, 0, 0);
 
 	if ($$r[0] ne '') {
-	    my $start = ($$r[0] eq "0") ? 0 : dm::parse_ltime ($$r[0]);
-	    my $end = ($$r[1] eq "0") ? 0 : dm::parse_ltime ($$r[1]);
+	    my $start = ($$r[0] eq "0") ? 0 : Utils::parse_ltime ($$r[0]);
+	    my $end = ($$r[1] eq "0") ? 0 : Utils::parse_ltime ($$r[1]);
 	    db_trace ("start: $start end: $end");
 	    $res_cond[0] = [ $start, $end ];
 	}
 	if ($$r[2] ne "") {
 	    my $str = $$r[2];
 	    my @wdays;
-	    while ($str =~ /([0-6HW])/g) {
+	    while ($str =~ /([0-6HW\!\~])/g) {
 		$wdays[$#wdays+1]= $1;
 	    }
 	    db_trace ("wdays: @wdays");
@@ -1401,22 +1429,29 @@ sub rcfg_parse_matrix( $ ) {
     \@result;
 }
 
-sub pcfg_start_rcfg_new( $ ) {
-    my ($rate_name) = @_;
+sub pcfg_start_rcfg_new( $$ ) {
+    my ($rate_name, $rate) = @_;
+    my $editable = 0; # XXX
+
+    unless (defined $rate) {
+      $rate = Dialup_Cost::get_pretty_rate ($rate_name);
+      $editable = 1;
+    }
+
     my $win = $main_widget->Toplevel;
     $win->focus(); # w32 workaround (?)
     my $balloon = $cfg_gui{'balloon_help'} ? $win->Balloon() : 0;
     $win->title("$APPNAME: cost for rate <$rate_name>");
     $win->resizable (0, 0);
     undef @rcfg_widgets;
-    rcfg_make_window ($win, $rate_name, rcfg_make_matrix ($rate_name), \@rcfg_widgets, $balloon)->pack();
+    rcfg_make_window ($win, $rate_name, rcfg_make_matrix ($rate), \@rcfg_widgets, $balloon, $editable)->pack();
 }
 
 sub pcfg_start_rcfg( $$ ) {
     my ($lb, $index) = @_;
     my $isp = $lb->get($index);
     my $isp_rate = dm::get_isp_tarif ($isp);
-    pcfg_start_rcfg_new ($isp_rate);
+    pcfg_start_rcfg_new ($isp_rate, undef);
 };
 
 sub pcfg_update_gadgets( $$ ) {
@@ -1555,8 +1590,8 @@ sub pcfg_editor_window( $$ ) {
 				#				    -variable => \$var,
 			       )->grid(-row => $row, -column => 1, -sticky => "e");
 	my $frame1 = $top->Frame;
-	#XXX#	$frame1->Button(-text => $LOC{'common_button_cancel'}, -command => sub{ pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets) })->pack();
-	my $button = $frame2->Button(-text => $LOC{'common_button_apply'},
+	#XXX#	$frame1->Button(-text => $LOC{'common.button.cancel'}, -command => sub{ pcfg_update_gadgets ($box->index('active'), \@pcfg_widgets) })->pack();
+	my $button = $frame2->Button(-text => $LOC{'common.button.apply'},
 				     -command => sub{pcfg_apply($top, $box, 0, \@pcfg_widgets)});
 	$frame1->pack(-fill => 'x');
 	$top->pack(-expand => 1, -fill => 'both');
@@ -1613,8 +1648,8 @@ sub sock_cfg_editor_window( $$ ) {
   $mask_frame->pack(-expand => 1, -fill => 'both');
 
   my $frame1 = $top->Frame;
-  $frame1->Button(-text => $LOC{'common_button_cancel'}, -command => sub { $win->destroy(); })->pack(-side => 'left' );
-  $frame1->Button(-text => $LOC{'common_button_apply'},
+  $frame1->Button(-text => $LOC{'common.button.cancel'}, -command => sub { $win->destroy(); })->pack(-side => 'left' );
+  $frame1->Button(-text => $LOC{'common.button.apply'},
 		  -command => sub
 		  { foreach my $i (0...$#refs) {
 		    my $ref = $refs[$i];
@@ -1629,7 +1664,7 @@ sub sock_cfg_editor_window( $$ ) {
 		  }
 		    $win->destroy ();
 		  })->pack(-side => 'right');
-  $frame1->Button(-text => $LOC{'common_button_default'},
+  $frame1->Button(-text => $LOC{'common.button.default'},
 		  -command => sub
 		  { foreach my $i (0..$#cfg_keys) {
 		    my $ref = $refs[$i];
@@ -1696,6 +1731,13 @@ sub color_cfg_editor_window( $$ ) {
 %Z     The time zone or name or abbreviation.
 ----------------------------------------------
 ');
+
+    if (1) {
+      push @types, 'text', 'text', 'text', 'text';
+      push @keys, 'Modem Init', 'Dial Prefix', 'Serial Device', 'Serial Speed';
+      push @cfg_keys, 'modem_init', 'modem_dial_prefix', 'modem_serial_device', 'modem_serial_bps';
+    }
+
     my @vals;
     my @refs;
     my @defaults;
@@ -1712,11 +1754,11 @@ sub color_cfg_editor_window( $$ ) {
     $mask_frame->pack(-expand => 1, -fill => 'both');
 
     my $frame1 = $top->Frame;
-    $frame1->Button(-text => $LOC{'common_button_cancel'},
+    $frame1->Button(-text => $LOC{'common.button.cancel'},
 		    -command => sub { $balloon->destroy if defined $balloon; # bug workaround?
 				      $win->destroy();
 				    })->pack(-side => 'left' );
-    $frame1->Button(-text => $LOC{'common_button_apply'},
+    $frame1->Button(-text => $LOC{'common.button.apply'},
 		    -command => sub
 		    { foreach my $i (0...$#refs) {
 			if ($types[$i] eq 'color' or $types[$i] eq 'text') {
@@ -1733,7 +1775,7 @@ sub color_cfg_editor_window( $$ ) {
 			$main_widget->destroy;
 		      } else { $win->destroy() }
 		    })->pack(-side => 'right');
-    $frame1->Button(-text => $LOC{'common_button_default'},
+    $frame1->Button(-text => $LOC{'common.button.default'},
 		    -command => sub
 		    { foreach my $i (0..$#cfg_keys) {
 			my $ref = $refs[$i];
@@ -1779,13 +1821,13 @@ sub rcfg_editor_window( $$ ) {
       my $frame2 = $frame->Frame;
       # Edit Rate Button
       my $edit_rate = $frame2->Button
-	(-text => $LOC{'common_button_edit'},
-	 -command => sub { pcfg_start_rcfg_new ($current_rate) },
+	(-text => $LOC{'common.button.edit'},
+	 -command => sub { pcfg_start_rcfg_new ($current_rate, undef) },
 	)->pack(-fill => 'x', -side => 'left', -expand => 'both');
       # Delete Rate Button
       require Tk::Dialog;
       my $delete_rate = $frame2->Button
-	(-text => $LOC{'common_button_delete'},
+	(-text => $LOC{'common.button.delete'},
 	 -command => sub {
 	   my $delete_rate_dialog = $frame2->Dialog(-text => "[$current_rate]\nReally delete rate?",
 						    -title => 'tkdialup: Confirm', -default_button => 'No',
@@ -1803,19 +1845,49 @@ sub rcfg_editor_window( $$ ) {
 	$dialog->add('Label', -text => "Please enter a name")->pack();
 	my $name = $dialog->add('Entry')->pack();
 	my $button = $frame2->Button
-	  (-text => $LOC{'common_button_new'},
+	  (-text => $LOC{'common.button.new'},
 	   -command => sub {
 	     if ($dialog->Show eq "OK" and $name->get
 		 and not defined (my $tem = Dialup_Cost::get_rate($name->get))) {
 	       Dialup_Cost::set_pretty_rate($name->get, []);
 	       &$update_options ($optmenu);
-	       pcfg_start_rcfg_new ($name->get);
+	       pcfg_start_rcfg_new ($name->get, undef);
 	     }
 	   });
 	$button;
       };
       $new_rate->pack(-fill => 'x', -side => 'left', -expand => 'both');
       # -----------------
+      my $update_rates = sub {
+	while (<$progdir/dialup_cost.data $cfg_dir_upd/*_cost.data>) {
+	  next unless -f $_;
+	  my $file = $_;
+	  my $tmp = Dialup_Cost::find_updatable_rates ($file);
+	  while (my ($key, $val) = each (%$tmp)) {
+	    my $old_val = Dialup_Cost::get_rate_attr ($key);
+	    my $dialog = do {
+	      require Tk::DialogBox;
+	      my $dialog = $frame2->DialogBox(-title => "Confirm", -buttons => ["Update", "Skip"]);
+	      $dialog->add('Label', -text => "Name: $key")->pack(-expand => 1, -fill => 'x');
+	      $dialog->add('Label', -text => "New-Date: " . $val->[0]->{'date'} )->pack(-expand => 1, -fill => 'x');
+	      $dialog->add('Label', -text => "(Old-Date: " . $old_val->{'date'} . ")")->pack(-expand => 1, -fill => 'x');
+	      $dialog->add('Label', -text => "File: " . Utils::pretty_filename($file))->pack(-expand => 1, -fill => 'x');
+	      $dialog->add ('Button', -text => 'View New Rate',
+			    -command => sub { pcfg_start_rcfg_new ($key, $$val[1] ) })->pack(-expand => 1, -fill => 'x');
+	      $dialog->add ('Button', -text => 'View Old Rate',
+			    -command => sub { pcfg_start_rcfg_new ($key, Dialup_Cost::get_pretty_rate ($key)) })->pack(-expand => 1, -fill => 'x');
+	      $dialog;
+	    };
+	    if ($dialog->Show eq "Update") {
+	      Dialup_Cost::add_pretty_rate ($key, $$val[1], $$val[0]);
+	    }
+	  }
+	}
+      };
+
+      my $upd_rate = $frame2->Button(-text => 'Update', -command => $update_rates);
+      $upd_rate->pack(-fill => 'x', -side => 'left', -expand => 'both');
+      #-------
       $frame1->pack(-fill => 'x');
       $frame2->pack(-fill => 'x', -expand => 'both');
       $frame;
@@ -1823,7 +1895,7 @@ sub rcfg_editor_window( $$ ) {
 
     my $frame4 = $win->Frame;
     my $frame2 = $win->Frame (-relief => 'sunken', -bd => '2');
-    my $exit_bt = $frame2->Button (-text => 'Cancel+Close', -command => sub { $win->destroy });
+    my $exit_bt = $frame2->Button (-text => 'Close', -command => sub { $win->destroy });
     my $save_bt = $frame2->Button (-text => 'Save+Close',
 				   -command => sub{ dm::save_cost_data();
 						    $win->destroy });
@@ -1857,7 +1929,7 @@ sub read_config_old( $$$ ) {
 		    if (/^\<$config_tag /) {
 			$result++;
 			while (m/\b([a-z_]+)\=["']([^\"\']*)['"]/g) {
-			    my ($key, $val) = ($1, dm::unescape_string ($2));
+			    my ($key, $val) = ($1, Utils::unescape_string ($2));
 			    $$cfg_hash{"$key"} = $val if defined $$cfg_default_hash{$key};
 			    db_trace("key=<$key> val=<$val>");
 			}
@@ -1887,7 +1959,7 @@ sub read_config( $$$ ) {
 			my $cfg_default_hash=$$cfg_hash{'.config_default'};
 			$result++;
 			while (m/\b([a-z_]+)\=["']([^\"\']*)['"]/g) {
-			    my ($key, $val) = ($1, dm::unescape_string ($2));
+			    my ($key, $val) = ($1, Utils::unescape_string ($2));
 			    $$cfg_hash{"$key"} = $val if defined $$cfg_default_hash{$key};
 			    db_trace("key=<$key> val=<$val>");
 			}
@@ -1912,7 +1984,7 @@ sub write_config( $ ) {
 	my $count=0;
 	while (my ($key, $val) = each (%cfg_gui)) {
 	    if ("$cfg_gui_default{$key}" ne $val) {
-		$line .= "$key='" . dm::escape_string ($val) . "' ";
+		$line .= "$key='" . Utils::escape_string ($val) . "' ";
 		db_trace ("key=<$key> val=<$val> count=<$count>");
 	    }
 	}
@@ -1946,7 +2018,7 @@ sub read_locale( $$ ) {
 	  my $key=$1;
 	  my $val=$2;
 	  if (defined $LOC{$key}) {
-	    $LOC{$key}=dm::unescape_string($val);
+	    $LOC{$key}=Utils::unescape_string($val);
 	  } else {
 	    print STDERR "$file:$line: Unknown configuration key <$1>\n";
 	  }
@@ -1984,110 +2056,114 @@ sub init_locale () {
  'posix_country' => 'US',
  'lc_currency_symbol' => '$',
  'lc_decimal_point' => '.',
- 'currency_cent' => 'Cent',
+ 'currency_cent_symbol' => 'Cent',        # ???-bw/09-Oct-00
  'lc_lang_alias' => 'English',            # lang on MS-Windows
  'lc_country_alias' => 'United States',   # country on MS-Windows
  'country_holydays' => '',
 #---- File Menu
- 'menu_file' => "File",
- 'menu_file_hangup_now' => "Hangup now",
- 'menu_file_hangup_now.help' => 'Disconnect immediatly by issuing "Down Cmd"',
- 'menu_file_hangup_defer' => "Hangup later",
- 'menu_file_hangup_defer.help' => 'Disconnect just before the current unit would end',
- 'menu_file_save' => "Save Configuration",
- 'menu_file_save.help' => 'Keep all configuration changes permanently',
- 'menu_file_quit' => "Quit",
- 'menu_file_quit.help' => 'Disconnect and terminate this "tkdialup" process immediatly.',
+ 'menu.main.file' => "File",
+ 'menu.main.file.hangup_now' => "Hangup now",
+ 'menu.main.file.hangup_now.help' => 'Disconnect immediatly by issuing "Down Cmd"',
+ 'menu.main.file.hangup_defer' => "Hangup later",
+ 'menu.main.file.hangup_defer.help' => 'Disconnect just before the current unit would end',
+ 'menu.main.file.save' => "Save Configuration",
+ 'menu.main.file.save.help' => 'Keep all configuration changes permanently',
+ 'menu.main.file.quit' => "Quit",
+ 'menu.main.file.quit.help' => 'Disconnect and terminate this "tkdialup" process immediatly.',
 #---- Edit Menu
- 'menu_edit' => "Edit",
- 'menu_edit_options' => "Options",
- 'menu_edit_options.help' => 'Change Programm settings',
- 'menu_edit_peer_options' => "Peer Options",
- 'menu_edit_peer_options.help' => 'Run a configuration editor. Its not full implemented yet
+ 'menu.main.edit' => "Edit",
+ 'menu.main.edit.options' => "Options",
+ 'menu.main.edit.options.help' => 'Change Programm settings',
+ 'menu.main.edit.peer_options' => "Peer Options",
+ 'menu.main.edit.peer_options.help' => 'Run a configuration editor. Its not full implemented yet
 You can examine a rate but you cannot edit a rate yet.',
- 'menu_edit_rate_options' => "Rate Options",
- 'menu_edit_rate_options.help' => 'Config Editor to create, edit and delete rates',
- 'menu_edit_gui_options' => "GUI Options",
- 'menu_edit_gui_options.help' => 'Customize GUI settings (colors, date-format)',
- 'menu_edit_socket_options' => "Socket Options",
- 'menu_edit_socket_options.help' => 'Edit parameters for communication  with dialer process.',
+ 'menu.main.edit.rate_options' => "Rate Options",
+ 'menu.main.edit.rate_options.help' => 'Config Editor to create, edit and delete rates',
+ 'menu.main.edit.gui_options' => "GUI Options",
+ 'menu.main.edit.gui_options.help' => 'Customize GUI settings (colors, date-format)',
+ 'menu.main.edit.socket_options' => "Socket Options",
+ 'menu.main.edit.socket_options.help' => 'Edit parameters for communication  with dialer process.',
 #---- View Menu
- 'menu_view' => "View",
- 'menu_view_graph' => "Graph",
- 'menu_view_graph.help' => 'Show time/money graphs of all active peers',
- 'menu_view_clock' => "Show clock",
- 'menu_view_clock.help' => 'Show digital clock',
- 'menu_view_progress_bar' => "Progress bar",
- 'menu_view_progress_bar.help' => "Show progress bar to display cost unit",
- 'menu_view_disconnect_button' => "Disconnect button",
- 'menu_view_disconnect_button.help' => "Provide disconnect button",
- 'menu_view_stat' => "Statistic ...",
- 'menu_view_stat.help' => 'Show a time/money history list for this user',
- 'menu_view_stat_filt' => "Statistic for ...",
- 'menu_view_stat_filt.help' => 'Show a time/money history list for this user',
- 'button_main_hangup' => "Hangup",
+ 'menu.main.view' => "View",
+ 'menu.main.view.graph' => "Graph",
+ 'menu.main.view.graph.help' => 'Show time/money graphs of all active peers',
+ 'menu.main.view.clock' => "Show clock",
+ 'menu.main.view.clock.help' => 'Show digital clock',
+ 'menu.main.view.progress_bar' => "Progress bar",
+ 'menu.main.view.progress_bar.help' => "Show progress bar to display cost unit",
+ 'menu.main.view.disconnect_button' => "Disconnect button",
+ 'menu.main.view.disconnect_button.help' => "Provide disconnect button",
+ 'menu.main.view.stat' => "Statistic ...",
+ 'menu.main.view.stat.help' => 'Show a time/money history list for this user',
+ 'menu.main.view.stat_filt' => "Statistic for ...",
+ 'menu.main.view.stat_filt.help' => 'Show a time/money history list for this user',
 #---- Help Menu
- 'menu_help' => "Help",
- 'menu_help_about' => "About ...",
- 'menu_help_about.help' => 'Show information about this program and its author',
- 'menu_help_balloon_help' => "Mouse Pointer Help",
- 'menu_help_balloon_help.help' => 'Toggle showing balloon help',
+ 'menu.main.help' => "Help",
+ 'menu.main.help.about' => "About ...",
+ 'menu.main.help.about.help' => 'Show information about this program and its author',
+ 'menu.main.help.balloon_help' => "Mouse Pointer Help",
+ 'menu.main.help.balloon_help.help' => 'Toggle showing balloon help',
 #---- Rate Window
- 'win_rate_date_start' => 'Start Date',
- 'win_rate_date_start.help' => 'Date when this rate became vaild (may be empty if next field is empty too)',
- 'win_rate_date_end' => 'End Date',
- 'win_rate_date_end.help' => 'Date when this rate became or will become invalid',
- 'win_rate_weekdays' => 'Weekdays',
- 'win_rate_weekdays.help' => 'Set of numbers (0..6) representing weekdays (Sun..Sat)',
- 'win_rate_daytime_start' => 'Start Time',
- 'win_rate_daytime_start.help' => 'Daytime on which this rate becomes valid (may be empty if next field is empty too)',
- 'win_rate_daytime_end' => 'End Time',
- 'win_rate_daytime_end.help' => 'Daytime on which tis rate becomes invalid',
- 'win_rate_money_per_min' => 'M/min',
- 'win_rate_money_per_min.help' => 'Payment in money per minute (not per unit!)', 
- 'win_rate_secs_per_unit' => 'secs/unit',
- 'win_rate_secs_per_unit.help' => 'Length of a unit in seconds',
- 'win_rate_money_per_connect' => 'M/Conn.',
- 'win_rate_money_per_connect.help' => 'Payment per connection (usually 0)',
- 'win_rate_free_linkup' => 'FL',
- 'win_rate_free_linkup.help' => 'Free DialUp (Paying starts not before PPP connection is up)',
- 'win_rate_overlay_rate' => 'OR',
- 'win_rate_overlay_rate.help' => 'Overlay Rate (this may be a additional payment with a different unit length)',
+ 'win.rate.date_start' => 'Start Date',
+ 'win.rate.date_start.help' => 'Date when this rate became vaild (may be empty if next field is empty too)',
+ 'win.rate.date_end' => 'End Date',
+ 'win.rate.date_end.help' => 'Date when this rate became or will become invalid',
+ 'win.rate.weekdays' => 'Weekdays',
+ 'win.rate.weekdays.help' => 'Set of numbers (0..6) representing weekdays (Sun..Sat)
+The letter H enables a rate on holydays
+The letter W disables a rate on holydays
+The letters ! and ~ negate all following letters
+Example: ~06H equal W12345 equal ~H~12345 (means "workdays only")',
+ 'win.rate.daytime_start' => 'Start Time',
+ 'win.rate.daytime_start.help' => 'Daytime on which this rate becomes valid (may be empty if next field is empty too)',
+ 'win.rate.daytime_end' => 'End Time',
+ 'win.rate.daytime_end.help' => 'Daytime on which tis rate becomes invalid',
+ 'win.rate.money_per_min' => 'M/min',
+ 'win.rate.money_per_min.help' => 'Payment in money per minute (not per unit!)', 
+ 'win.rate.secs_per_unit' => 'secs/unit',
+ 'win.rate.secs_per_unit.help' => 'Length of a unit in seconds',
+ 'win.rate.money_per_connect' => 'M/Conn.',
+ 'win.rate.money_per_connect.help' => 'Payment per connection (usually 0)',
+ 'win.rate.free_linkup' => 'FL',
+ 'win.rate.free_linkup.help' => 'Free DialUp (Paying starts not before PPP connection is up)',
+ 'win.rate.overlay_rate' => 'OR',
+ 'win.rate.overlay_rate.help' => 'Overlay Rate (this may be a additional payment with a different unit length)',
 #--- Main Window
- 'win_main_start' => "Start",
- 'win_main_start.help' => "Hit a Button to Connect a Peer",
- 'win_main_money' => "Money",
- 'win_main_money.help' => "Real Time Money Counter",
- 'win_main_rate' => "Rate",
- 'win_main_rate.help' => "Money per Minute",
+ 'win.main.start' => "Start",
+ 'win.main.start.help' => "Hit a Button to Connect a Peer",
+ 'win.main.money' => "Money",
+ 'win.main.money.help' => "Real Time Money Counter",
+ 'win.main.rate' => "Rate",
+ 'win.main.rate.help' => "Money per Minute",
+ 'win.main.hangup' => "Hangup",
 #--- Peer Config Editor
- 'pcfg_name' => 'Name',
- 'pcfg_name.help' => 'Unique name for this ISP.  You cannot change it.',
- 'pcfg_up_cmd' => 'Up Cmd',
- 'pcfg_up_cmd.help' => 'Shell command for making a connection',
- 'pcfg_down_cmd' => 'Down Cmd',
- 'pcfg_down_cmd.help' => 'Shell command for disconnect',
- 'pcfg_label' => 'Label',
- 'pcfg_label.help' => 'Name used on both main-window-buttons and graphs',
- 'pcfg_color' => 'Color',
- 'pcfg_color.help' => 'Color used in graphs',
- 'pcfg_rate' => 'Rate',
- 'pcfg_rate.help' => 'Choose an existing rate. You may need to create one (Menu Edit=>Rate Options)',
- 'pcfg_visible' => 'Visible',
- 'pcfg_visible.help' => 'If it\'s visible on both main and graph window.',
+ 'win.pcfg.name' => 'Name',
+ 'win.pcfg.name.help' => 'Unique name for this ISP.  You cannot change it.',
+ 'win.pcfg.up_cmd' => 'Up Cmd',
+ 'win.pcfg.up_cmd.help' => 'Shell command for making a connection',
+ 'win.pcfg.down_cmd' => 'Down Cmd',
+ 'win.pcfg.down_cmd.help' => 'Shell command for disconnect',
+ 'win.pcfg.label' => 'Label',
+ 'win.pcfg.label.help' => 'Name used on both main-window-buttons and graphs',
+ 'win.pcfg.color' => 'Color',
+ 'win.pcfg.color.help' => 'Color used in graphs',
+ 'win.pcfg.rate' => 'Rate',
+ 'win.pcfg.rate.help' => 'Choose an existing rate. You may need to create one (Menu Edit=>Rate Options)',
+ 'win.pcfg.visible' => 'Visible',
+ 'win.pcfg.visible.help' => 'If it\'s visible on both main and graph window.',
 #--- Common Elements (... common element balloon help is somewhat stupid -bw/14-Sep-00)
- 'common_button_apply' => 'Apply',
- 'common_button_apply.help' => 'Keep values for this session',
- 'common_button_default' => 'Default',
- 'common_button_default.help' => 'Read in default values.',
- 'common_button_cancel' => 'Cancel',
- 'common_button_cancel.help' => 'Discard all changes',
- 'common_button_edit' => 'Edit',
- 'common_button_edit.help' => 'Start editor',
- 'common_button_new' => 'New',
- 'common_button_new.help' => 'Create New Item',
- 'common_button_delete' => 'Delete',
- 'common_button_delete.help' => 'Delete Item',
+ 'common.button.apply' => 'Apply',
+ 'common.button.apply.help' => 'Keep values for this session',
+ 'common.button.default' => 'Default',
+ 'common.button.default.help' => 'Read in default values.',
+ 'common.button.cancel' => 'Cancel',
+ 'common.button.cancel.help' => 'Discard all changes',
+ 'common.button.edit' => 'Edit',
+ 'common.button.edit.help' => 'Start editor',
+ 'common.button.new' => 'New',
+ 'common.button.new.help' => 'Create New Item',
+ 'common.button.delete' => 'Delete',
+ 'common.button.delete.help' => 'Delete Item',
 #---
  );
 
@@ -2134,11 +2210,11 @@ while (<country-* $cfg_dir/country-*>) {
 
 ##--- Main
 sub cfg_locale {
-  @pcfg_labels = ($LOC{'pcfg_name'}, $LOC{'pcfg_up_cmd'}, $LOC{'pcfg_down_cmd'},
-		  $LOC{'pcfg_label'}, $LOC{'pcfg_color'}, $LOC{'pcfg_rate'}, $LOC{'pcfg_visible'});
-  @pcfg_label_help = ($LOC{'pcfg_name.help'}, $LOC{'pcfg_up_cmd.help'}, $LOC{'pcfg_down_cmd.help'},
-		      $LOC{'pcfg_label.help'}, $LOC{'pcfg_color.help'}, $LOC{'pcfg_rate.help'},
-		      $LOC{'pcfg_visible.help'});
+  @pcfg_labels = ($LOC{'win.pcfg.name'}, $LOC{'win.pcfg.up_cmd'}, $LOC{'win.pcfg.down_cmd'},
+		  $LOC{'win.pcfg.label'}, $LOC{'win.pcfg.color'}, $LOC{'win.pcfg.rate'}, $LOC{'win.pcfg.visible'});
+  @pcfg_label_help = ($LOC{'win.pcfg.name.help'}, $LOC{'win.pcfg.up_cmd.help'}, $LOC{'win.pcfg.down_cmd.help'},
+		      $LOC{'win.pcfg.label.help'}, $LOC{'win.pcfg.color.help'}, $LOC{'win.pcfg.rate.help'},
+		      $LOC{'win.pcfg.visible.help'});
   @pcfg_types =  ('text', 'text',   'text',      'text', 'color', 'text',  'flag');
 
   $lang_menu_variable=$cfg_gui{'lang'};
@@ -2183,13 +2259,14 @@ sub cfg_locale {
 @dm::commands_on_connect_failure = (\&update_gui_failure, \&clear_gui_counter);
 @dm::commands_on_disconnect = (\&main_window_deiconify, \&update_gui_offline, \&update_gui_counter, \&update_progress_bar);
 
-$dm::time_correction_offset = $ENV{"TKD_TIME_OFFSET"} if defined $ENV{"TKD_TIME_OFFSET"}; # MS-Windows9x
+$Utils::time_correction_offset = $ENV{"TKD_TIME_OFFSET"} if defined $ENV{"TKD_TIME_OFFSET"}; # MS-Windows9x
 
 restore_config ();
 dm::init ();
+Pon::setparams(\$cfg_gui{'modem_init'}, \$cfg_gui{'modem_dial_prefix'},
+	       \$cfg_gui{'modem_serial_device'}, \$cfg_gui{'modem_serial_bps'});
 
 db_trace("--->$env_locale<---");
-
 #read_config_old((-e $cfg_file_usr) ? $cfg_file_usr : $cfg_file);
 # ???-bw/31-Aug-00 Is it allowed to restart Tk?
 while ($app_has_restarted) {
@@ -2201,6 +2278,13 @@ while ($app_has_restarted) {
     init_locale ();
     read_locale ($cfg_gui{'lang'}, $cfg_gui{'country'});
     cfg_locale ();
+  }
+
+  if (0) {
+    my $str=Dialup_Cost::write_data_ff__new();
+    my $el = Utils::read_element (\$str);
+    print Utils::write_element ($el) . "\n";
+    exit();
   }
 
   make_gui_mainwindow();
