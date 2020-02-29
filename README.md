@@ -1,0 +1,8 @@
+![ScreenShot](img/tkdialup_graph15.png)
+![ScreenShot](img/tkdialup_graph5.png)
+![ScreenShot](img/tkdialup_main.png)
+![ScreenShot](img/tkdialup_pcfg.png)
+![ScreenShot](img/tkdialup_rcfg1.png)
+![ScreenShot](img/tkdialup_rcfg.png)
+![ScreenShot](img/tkdialup_scfg.png)
+![ScreenShot](img/tkdialup_stat.png)
